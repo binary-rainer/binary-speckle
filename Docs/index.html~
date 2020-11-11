@@ -1,0 +1,347 @@
+<html>
+<head>
+<!-- created by Vesa Junkkarinen   23 May 2000    CfAO UCSD -->
+<!-- BODY BACKGROUND="./white.jpg" -->
+<BODY bgcolor=white>
+<title>Binary/Speckle</title>
+<!-- Changed by: Rainer Koehler, 08-May-2002 -->
+<meta name="description" content="Software for Adaptive Optics">
+<meta name="keywords" content="astronomy, astronomy research,
+adaptive optics, active optics, astronomy software, AO software">
+</head>
+<body>
+  <center>
+    <br>
+    <br>
+    <TABLE BORDER=3 CELLSPACING=10 CELLPADDING=10>
+      <TR>
+	<TD ALIGN=CENTER>
+	  <H1>Rainer's Binary/Speckle Package<BR>
+	    (Software for Adaptive Optics)</H1>
+	</TD>
+      </TR>
+    </TABLE>
+  </CENTER>
+  <br>
+  <br>
+  <p>
+  <b>
+  <br>
+  <img src="./ball_blu.gif"></img>
+  Synopsis: Software to reduce Speckle or AO data from the raw data to
+  deconvolved images (in Fourier space), to determine the parameters
+  of a binary or triple, and to find limits for undetected companion stars.
+  <br>
+  <br>
+  <img src="./ball_blu.gif"></img>
+  Operating System: Unix, tested on Linux (Redhat and SuSE) and Solaris
+  <br>
+  <br>
+  <img src="./ball_blu.gif"></img>
+  Language: C and Tcl/Tk
+  <br>
+  <br>
+  <img src="./ball_blu.gif"></img>
+  History: Developed by R. K&ouml;hler, see for example
+  <A HREF="http://adsabs.harvard.edu/cgi-bin/nph-bib_query?bibcode=2000A%26A...356..541K&db_key=AST&high=3a3579356c23044">
+     K&ouml;hler et al., Astronomy and Astrophysics, v.356, p.541-558
+     (2000)</A>
+  </B>
+  <br>
+  <br>
+  <HR>
+  <IMG SRC="new_yellow.gif" ALT="New" Align=Left>
+  20. February 2002:  I encountered more problems caused by the
+  copyright restrictions of the Numerical Recipes, so I decided to
+  write my own implementation of the amoeba-algorithm.  This should
+  make installation much easier.
+  <P>
+  22. January 2002:  Another new version on this website.  Again, the
+  changes are mostly bugfixes, this time related to warnings when
+  compiling on non-Intel/non-Alpha machines and the interpretation of
+  new SHARP I-files.  There are a few functions which are undocumented,
+  untested or simply do not work in the distributed version.
+  Everything described in the documentation should work, however.
+  <P>
+  19. June 2001:
+  A new version is avaiable on this webpage.  The changes are mostly
+  bugfixes related to the byte-order on Intel- and Alpha-machines.
+  To download it, go to <A href="#install">the Installation section</A>.
+  <BR clear=all>
+  <HR>
+  <H2>Introduction</H2>
+
+  I started working on this package during my PhD thesis, which
+  consisted of a speckle multiplicity survey among T Tauri Stars in
+  Taurus-Auriga and Scorpius-Centaurus.  We also had the opportunity
+  to do AO observations of some of the stars, and since we didn't have
+  a better program, we used the speckle program to reduce this data.
+  Since then, the program has been used for speckle surveys of young
+  stars in Chamaeleon and Ophiuchus and old stars in the galactic
+  halo, and for a survey using Adaptive Optics of young stars in
+  Lupus.
+  <P>
+  Publications describing the method are of course
+  <A HREF="http://hex.ucsd.edu/~koehler/DasWerk/index.html">my PhD thesis</A>
+  (which is unfortunately in German),
+  <A HREF="http://adsabs.harvard.edu/cgi-bin/nph-bib_query?bibcode=1998A%26A...331..977K&db_key=AST&high=3a3579356c11772">
+    K&ouml;hler &amp; Leinert, Astronomy and Astrophysics 331, 997 (1998)</A>, and
+  <A HREF="http://adsabs.harvard.edu/cgi-bin/nph-bib_query?bibcode=2000A%26A...356..541K&db_key=AST&high=3a3579356c23044">
+     K&ouml;hler et al., Astronomy and Astrophysics 356, 541 (2000)</A>.
+  The latter paper contains an especially comprehensive explanation
+  and some examples, so I include it in the tar-file of the package
+  (<A HREF="AA1668E.PDF">here is the PDF-file</A>).
+
+  <H2>Prerequisites</H2>
+  Unfortunately, this program relies on a couple of other packages.
+  Fortunately, these packages are freely available, some of them
+  are usually already installed on a linux system.
+
+  <UL>
+    <LI> A C-compiler <BR>
+      I used the GNU compiler most of the time, but any compiler that
+      understands ANSI-C <i>should</i> work.
+    </LI>
+    </P>
+
+    <LI> Tcl/Tk
+      <TABLE>
+	<TR><TD>Version:     </TD><TD>8.x (tested with 8.0 and 8.3)</TD></TR>
+	<TR><TD>Available at:</TD>
+	  <TD><A HREF="http://www.scriptics.com">http://www.scriptics.com</A></TD></TR>
+      </TABLE>
+      Please note that we also need the tcl/tk-libraries.
+      It's not sufficient to have the "wish" program only!
+      Usually already installed on Linux.
+    </LI>
+    </P>
+
+    <LI> GNU make </LI>
+    <TABLE>
+      <TR><TD>Version:	   </TD><TD>3.79</TD></TR>
+      <TR><TD>Available at:</TD>
+	<TD><A HREF="http://www.gnu.org">http://www.gnu.org</A></TD></TR>
+    </TABLE>
+    This is not only used for compilation, but also during data reduction!
+    Usually already installed on Linux.
+    </P>
+
+    <LI> SAOimage DS9 and XPA </LI>
+    <TABLE>
+      <TR><TD>Version:	   </TD><TD>1.9.8 or 2.0 (DS9), 2.0.3 (XPA)</TD></TR>
+      <TR><TD>Available at:</TD>
+	<TD><A HREF="http://hea-www.harvard.edu/RD/ds9">
+	      http://hea-www.harvard.edu/RD/ds9</A></TD></TR>
+    </TABLE>
+    In order to use the xpa-protocol on SuSE linux, we had to set
+    the environment-variable XPA_METHOD to "local".  In the csh or
+    tcsh shell, this is done with:
+    <PRE>      setenv XPA_METHOD local</PRE>
+    In the bash shell, use
+    <PRE>      export XPA_METHOD=local</PRE>
+    </P>
+
+    <LI> FFTW </LI>
+    <TABLE>
+      <TR><TD>Version:	   </TD><TD>2.1.3</TD></TR>
+      <TR><TD>Available at:</TD>
+	<TD><A HREF="http://www.fftw.org">http://www.fftw.org</A></TD></TR>
+    </TABLE>
+    This is used during the deconvolution only.  Of course, that is
+    probably the most important part of the program.
+    </P>
+
+    <LI> PGPLOT </LI>
+    <TABLE>
+      <TR><TD>Version:	   </TD><TD>5.2.0</TD></TR>
+      <TR><TD>Available at:</TD>
+	<TD><A HREF="http://www.astro.caltech.edu/~tjp/pgplot/">
+	      http://www.astro.caltech.edu/~tjp/pgplot/</A></TD></TR>
+    </TABLE>
+    The programs <KBD>tkfmovie</KBD>, <KBD>binplot</KBD>, and
+    <KBD>maxbright</KBD> use the <KBD>/PS</KBD> and the
+    <KBD>/XTK</KBD> drivers.  If those drivers are not installed, you
+    have to install them, which might require a complete
+    re-installation of PGPLOT.  You need a FORTRAN compiler to install
+    it from the source.  Here is the
+    <A HREF="drivers.list"><KBD>drivers.list</KBD></A> I used when I
+    installed PGPLOT.
+    </P>
+    <LI> netpbm </LI>
+    <TABLE>
+      <TR><TD>Version:	</TD><TD>probably not important</TD></TR>
+      <TR><TD>Available at:</TD>
+	<TD><A HREF="http://sourceforge.net/projects/netpbm/">
+	      http://sourceforge.net/projects/netpbm/</A></TD></TR>
+    </TABLE>
+    Used only to create a hardcopy of the results, and only the
+    <KBD>pnmtops</KBD> program is needed.  The README file in the
+    netpbm package explains how you can compile only one program.
+  </UL>
+
+ <!--
+  If you want to use the <KBD>amf</KBD> program, you also need the
+  source code of the Numerical Recipes in C.  (<KBD>amf</KBD> uses the
+  amoeba algorithm to determine the parameters of a binary.  There is
+  also another program to do this without using Numerical Recipes
+  Code, but it is <strong>much</strong> slower.)  Unfortunately, we
+  are not allowed to distribute the source code of Numerical Recipes
+  routines.  However, we are allowed to distribute executable, so we
+  might be able to help you.  Just contact me
+  (<A HREF="mailto:rkoehler@ucsd.edu">rkoehler@ucsd.edu</A>).
+  -->
+  <P>
+  <A name="install">
+  <H3>Installation</H3>
+  </A>
+  <OL>
+    <LI>Download the tar-file:<P>
+	<img src="./ball_blu.gif"></img>
+	<A HREF="Binary-Speckle.tar.gz">
+	  Here is a gzipped tar-file of the sources</A><P>
+	<img src="./ball_blu.gif"></img>
+	<A HREF="Speckle-example.tar.gz">
+	  Here is an example data set (raw and reduced data)
+	</A> &nbsp; <b>28 MBytes!</b><P>
+    </LI>
+    <LI>Unpack it: &nbsp;&nbsp;&nbsp;
+      <KBD>gunzip -c Binary-Speckle.tar.gz | tar -xvf -</KBD>
+      <P>
+    </LI>
+    <LI>Go to the Binary-Speckle directory: &nbsp;&nbsp;&nbsp;
+      <KBD>cd Binary-Speckle</KBD><P>
+    </LI>
+    <!--
+      If you have the Numerical Recipes source code, follow the
+      instructions in <KBD>binfit/Makefile</KBD>.<P>
+      -->
+    <LI>
+      Edit the Makefile in the Binary-Speckle directory.  The most
+      important change is to enter the locations of Binary-Speckle
+      itself, Tcl/Tk,  FFTW, and PGPLOT.
+      There is a section with machine-specific settings for Linux,
+      Solaris, and HP-UX, uncomment the entries appropriate for your
+      machine.  The current version has only been tested on Linux and
+      Solaris 8, but older versions ran on other Solaris versions and
+      HP-UX.  Please tell us if you have to change something.<P>
+    </LI>
+    <LI>Type:
+      <PRE>
+	make
+	make install
+      </PRE>
+      This should compile everything and put the executable programs
+      into the toplevel directory.
+    </LI>
+    <LI>
+      You have to add the top-level directory to your path-variable,
+      so the shell is able to find the programs.  This is done best by
+      editing <KBD>.cshrc</KBD> (for tcsh-users) or
+      <KBD>.profile</KBD> (for bash-users) in your home-directory.
+    </LI>
+  </OL>
+  <hr>
+  <H3>Documentation</H3>
+
+  The function of the package can be divided into three tasks:
+  <OL>
+    <LI>Reduce the raw data to deconvolved fourier-transformed
+      images</LI>
+    <LI>Determine the parameters of a binary or triple</LI>
+    <LI>Find limits for the brightness of an undetected companion</LI>
+  </OL>
+  There are several different programs required to do this, and the
+  connections between them are probably not easy to understand at
+  first sight.
+  <P>
+  The principle is (hopefully) pretty simple:  There is a master
+  program called "<KBD>mcspeckle</KBD>" ("mouse controlled speckle",
+  since its predecessor didn't have a graphical user interface).  The
+  user tells mcspeckle which data files to use, what is in the files
+  (objects, sky etc.), and what should be done.  Mcspeckle than
+  (usually) creates a Makefile, i.e. an input file for the
+  <KBD>make</KBD> program that contains all the dependancies between
+  the different data files and the commands needed to do the data
+  reduction.  <KBD>Make</KBD> then decides what has to be done to
+  create the final results.  In the good (?) old days, when one data
+  reduction ran the whole night and quite often ended with a "disk
+  full error", this was very useful.  One could simply fix the problem
+  and run <KBD>make</KBD> again.  <KBD>Make</KBD> then checked
+  which files were up to date und ran only the commands for the files
+  that had not yet been reduced.  The user shouldn't have to fiddle
+  with the contents of the makefiles.
+  <P>
+  Of course, someone has to do the work of reading the data, doing
+  something with it, and writing the results to another file.  This
+  is the task of most of the other programs in the package
+  (<KBD>despeckle</KBD>, <KBD>findcenter</KBD>, <KBD>fits2pnm</KBD>,
+  <KBD>fitsmean</KBD>, <KBD>maskedit</KBD>, <KBD>prespeckle</KBD>,
+  <KBD>quickvis</KBD>, <KBD>saa</KBD>, and <KBD>tkfmovie</KBD>).
+  Some of them have their own graphical interface to let the user
+  adjust something, but most of them are simply called by
+  <KBD>make</KBD> or from the shell, and accept only command line
+  options.  The most important option is "-h", which will show all the
+  other options.
+  <P>
+  Furthermore, there are <KBD>binplot</KBD>, <KBD>amf</KBD>, and
+  <KBD>bff</KBD>, which fit a binary or triple model to the data.
+  Finally, <KBD>maxbright</KBD> calculates limits for undetected
+  companions.
+  <P>
+  Here are tutorials for the three basic tasks:
+  <P>
+  <img src="./ball_blu.gif"></img>
+  <A HREF="deconvolution.html">Reducing the raw data and deconvolution</A>
+  <P>
+  <img src="./ball_blu.gif"></img>
+  <A HREF="maxbright.html">Finding out if a star is not a binary</A>
+  <P>
+  <img src="./ball_blu.gif"></img>
+  <A HREF="binfit.html">Finding the parameters of a binary</A>
+  <P>
+  <hr>
+
+  <H2>Copyright</H2>
+
+    Copyright (C) 1995 - 2002 Rainer K&ouml;hler
+    <P>
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
+    <P>
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+    <P>
+    You should have received a copy of the GNU General Public License
+    along with this program; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+    <P>
+    If you find the program useful, please acknowledge it in any
+    publications that result from its use.
+
+
+  <H3> Acknowledgements </H3>
+
+  Thanks go to Norbert Weitzel who wrote the predecessor of my speckle
+  package.  I also thank Christoph Leinert, my PhD supervisor, who
+  teached me nearly everything I know about speckle interferometry.
+  We acknowledge the work of Matteo Frigo and Steven G.\ Johnson, who
+  wrote the FFTW library and made it public.
+  <P>
+
+<hr>
+<center>
+Software for Adaptive Optics --
+<a href="http://www.ucolick.org/~cfao/">Center for Adaptive
+  Optics</a>, University of California, Santa Cruz <br>
+Contact Person for the Software for AO (UCSD) site: Vesa Junkkarinen,
+<a href="mailto:vesa@ucsd.edu">vesa@ucsd.edu</a>,
+Phone: 858-534-0735, Fax: 858-534-0177<br>
+Center for Astrophysics and Space Sciences, University of California,
+San Diego, La Jolla, CA 92093-0424 <br>
+</center>
+</body>
+</html>
