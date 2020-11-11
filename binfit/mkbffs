@@ -1,0 +1,232 @@
+#!@@PATH_TO_WISH@@
+# -*- Mode: tcl -*-
+#
+# mkbffs.tk
+# Created:     Fri Sep  3 15:10:38 1999 by Koehler@hex
+# Last Change: Tue Dec 18 12:04:12 2001
+#
+# This file is Hellware!
+# It may send you and your data straight to hell without further notice.
+#
+#############################################################################
+
+if {[info exists env(TCL_RK_LIBRARY)] && [file isdir $env(TCL_RK_LIBRARY)]} {
+    # all right
+} elseif [file isdir "@@PATH_TO_TCL_RK@@"] {
+    set env(TCL_RK_LIBRARY) "@@PATH_TO_TCL_RK@@"
+} elseif [file isdir "./tcl-rk"] {
+    set env(TCL_RK_LIBRARY) "[pwd]/tcl-rk"
+} else {
+    puts "No Tcl-RK library found!"
+}
+lappend auto_path $env(TCL_RK_LIBRARY)
+
+rkInit
+
+set Debug 1
+set groupfile ""
+
+#############################################################################
+
+proc write_bfffile {do_fit name vis dvis pha dpha} {
+    global param
+
+    set FP [open $name "w"]
+    puts $FP "#"
+    puts $FP "# $name, created by mkbffs.tk"
+    puts $FP "#"
+    puts $FP "visib  = $vis"
+    puts $FP "dvisib = $dvis"
+    if {$pha != ""} {
+	puts $FP "phase  = $pha"
+	puts $FP "dphase = $dpha"
+    }
+    puts $FP ""
+    puts $FP "angle1 =  $param(min_angle) $param(max_angle)"
+    puts $FP "dist1  =  $param(min_dist)  $param(max_dist)"
+    puts $FP "brightn1= $param(min_brgtn) $param(max_brgtn)"
+    puts $FP ""
+    puts $FP "radius = $param(radius)"
+    puts $FP ""
+    puts $FP "bff_out = *.bffo"
+    puts $FP "fit_out = *.fit"
+    close $FP
+
+    if {$do_fit != ""} { catch "exec $do_fit $name >&@stdout" }
+}
+
+proc write_bffs {do_fit} {
+    global cube_list use_cube
+
+    set cnt 1
+    foreach f $cube_list {
+	if $use_cube($f) {
+	    puts "file $f..."
+	    write_bfffile $do_fit "FitVi$cnt.bff" "${f}_visi" "${f}_dvis" "" ""
+	    write_bfffile $do_fit "FitKT$cnt.bff" "${f}_visi" "${f}_dvis" "${f}_ktph" "${f}_dktph"
+	    write_bfffile $do_fit "FitBi$cnt.bff" "${f}_visi" "${f}_dvis" "${f}_biph" "${f}_dbiph"
+	    incr cnt
+	}
+    }
+    if {$do_fit != ""} {
+	exec binResults.pl > Results
+	exec gnuclient_emacs Results
+    }
+}
+
+#############################################################################
+
+proc parse_grpfile {} {
+    global groupfile cube_list use_cube
+
+    if {$groupfile == ""} {
+	tk_dialog .oops "No Groupfile" "Please enter a groupfile" warning 0 "Oops!"
+	return
+    }
+    set prefix [file dirname $groupfile]
+    set cnt 1
+
+    puts [winfo children .cubf]
+    set cube_list ""
+
+    set FP [open $groupfile]
+    # skip to beginning of "object" section
+    while {[gets $FP line] >= 0} {
+	if [regexp -nocase {^object} $line] { break }
+    }
+    # read object files
+    while {[gets $FP line] >= 0} {
+	if [regexp -nocase {^obj(|ect)-sky} $line] { break }
+	if [regexp {^File: +(.+)$} $line match fname] { set f "$prefix/$fname" }
+	if [regexp {^Obje[ck]t: +(.+)$} $line match oname] {
+	    #puts "File $f"
+	    lappend cube_list $f
+	    set use_cube($f) 1
+	    checkbutton .cubf.c$cnt -text "$f = $oname" -var use_cube($f) -anchor w
+	    pack .cubf.c$cnt -side top -padx 2m -pady 1 -fill x -expand y
+	    incr cnt
+	}
+    }
+}
+
+#############################################################################
+# MAIN
+#############################################################################
+# The Name of the Groupfile
+
+frame .grpf -relief raised
+label .grpf.l -text "Groupfile:"
+entry .grpf.e -textvar groupfile -width 42 -relief sunken
+bind .grpf.e <Return> { parse_grpfile }
+
+pack .grpf.l -side left -padx 2
+pack .grpf.e -side left -padx 3 -pady 1 -expand 1 -fill x
+
+pack .grpf -pady 1 -padx 1 -side top -fill x
+
+#############################################################################
+# The datacubes
+
+frame .cubf -relief raised
+label .cubf.l -text "Data cubes:" -anchor w
+
+# checkbuttons will be added by parse_grpfile
+
+pack .cubf.l -side top -padx 2 -pady 2 -fill x
+pack .cubf -pady 1 -padx 1 -side top -fill x
+
+#############################################################################
+# Previous Fits
+
+frame .prvf -relief raised
+label .prvf.l -text "Previous Results:" -anchor w
+
+text .prvf.txt -width 60 -height 5 -setgrid y -wrap none -yscroll ".prvf.sy set" -xscroll ".prvf.sx set"
+scrollbar .prvf.sy -command ".prvf.txt yview"
+scrollbar .prvf.sx -command ".prvf.txt xview" -orient h
+mscroll .prvf.txt
+grid .prvf.l    x	-padx .2m -pady 2  -sticky "w"
+grid .prvf.txt .prvf.sy -padx .2m -pady 1m -sticky "snew"
+grid .prvf.sx	x       -padx .2m -pady 1m -sticky "snew"
+grid columnconfigure .prvf 0 -weight 1
+grid rowconfigure    .prvf 1 -weight 1
+
+set param(min_angle) 360.0
+set param(max_angle)   0.0
+set param(min_dist) 99.0
+set param(max_dist)  0.0
+set param(min_brgtn) 1.0
+set param(max_brgtn) 0.0
+set param(radius)    42
+
+set FP [open "| egrep (BEGLEITER|RADIUS) [glob *.fit]"]
+while {[gets $FP line] >= 0} {
+    if {$Debug} {puts $line}
+    if [regexp {^.*.fit:BEGLEITER:[ 	]+([-0-9.]+)[ 	]+([-0-9.]+)[ 	]+([-0-9.]+)}\
+	    $line m fit(angle) fit(dist) fit(brgtn)] {
+
+	foreach p { angle dist brgtn } {
+	    if {$Debug} {puts "$param(min_$p) ... $fit($p) ... $param(max_$p)"}
+	    if { $param(min_$p) > $fit($p) } { set param(min_$p) $fit($p) }
+	    if { $param(max_$p) < $fit($p) } { set param(max_$p) $fit($p) }
+	}
+	.prvf.txt insert end "$line\n"
+    } elseif [regexp {^.*.fit:RADIUS[ 	]*:[ 	]+([-0-9.]+)} $line m radi] {
+	if {$radi < $param(radius)} { set param(radius) $radi }
+    }
+}
+close $FP
+
+pack .prvf -pady 1 -padx 1 -side top -fill x
+
+#############################################################################
+# The parameters
+
+frame .parf -relief raised
+
+proc mk_param_range {w p name} {
+    global param
+
+    label ${w}lab -text $name -anchor e
+    entry ${w}min -textvar param(min_$p) -width 12
+    entry ${w}max -textvar param(max_$p) -width 12
+    grid ${w}lab ${w}min ${w}max -padx 4 -pady 4 -sticky we
+}
+
+label .parf.min -text "Minimum"
+label .parf.max -text "Maximum"
+grid x .parf.min .parf.max -padx 2 -pady 2
+
+mk_param_range .parf.angle angle "Angle:"
+mk_param_range .parf.dist  dist  "Distance:"
+mk_param_range .parf.brgtn brgtn "Brightness Ratio:"
+
+label .parf.radl -text "Radius of Fit:" -anchor e
+entry .parf.rade -textvar param(radius) -width 12
+grid .parf.radl .parf.rade -padx 4 -pady 4 -sticky we
+
+grid columnconfigure .parf 1 -weight 1
+grid columnconfigure .parf 2 -weight 1
+
+pack .parf -pady 1 -padx 1 -side top -fill both
+
+#############################################################################
+# The Buttons
+
+frame .butf -relief raised
+
+button .ok  -text "Write bffs"  -width 10 -command { write_bffs ""; exit }
+button .amf -text "Write & amf" -width 10 -command { write_bffs "amf"; exit }
+button .bff -text "Write & bff" -width 10 -command { write_bffs "bff"; exit }
+button .cnc -text "Cancel" -width 10 -command exit
+
+pack .ok .amf .bff .cnc -in .butf -side left -expand 1 -padx 5m -pady 2m -fill x
+
+pack .butf -pady 1 -padx 1 -side top -fill x
+
+#############################################################################
+
+if { $argc > 0 } {
+    set groupfile [lindex $argv 0]
+    parse_grpfile
+}

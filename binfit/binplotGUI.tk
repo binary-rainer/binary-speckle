@@ -1,0 +1,690 @@
+#!@@PATH_TO_BINWISH@@/binwish
+# -*- Mode: tcl -*-
+#
+# binplotGUI.tk
+# Created:     Thu Aug 27 16:40:45 1998 by Koehler@hex
+# Last Change: Wed Aug 14 17:33:34 2002
+#
+# Tcl-part of binplot, Tcl_Eval()ed by binplotGUI.c
+#
+#############################################################################
+
+if {[info exists env(TCL_RK_LIBRARY)] && [file isdir $env(TCL_RK_LIBRARY)]} {
+    # all right
+} elseif [file isdir "@@PATH_TO_TCL_RK@@"] {
+    set env(TCL_RK_LIBRARY) "@@PATH_TO_TCL_RK@@"
+} elseif [file isdir "./tcl-rk"] {
+    set env(TCL_RK_LIBRARY) "[pwd]/tcl-rk"
+} else {
+    puts "No Tcl-RK library found!"
+}
+lappend auto_path $env(TCL_RK_LIBRARY)
+rkInit
+option add *Scale.troughColor SkyBlue4	widgetDefault
+bind . <1> { focus %W }
+#
+# /*************** Some procs ***************/
+#
+set FitFile ""
+proc ReadFit {nm} {
+    global FitFile
+
+    set FitFile $nm
+    fitfile $nm
+    wm title . "binplot: $nm"
+}
+
+proc labentry { name labargs entargs entbind} {
+    eval frame $name
+    eval label $name.b -anchor e -width 8 -padx 2 $labargs
+    eval entry $name.e -relief sunken -width 48 $entargs
+    bind $name.e <Return> $entbind
+    pack $name.b -side left
+    pack $name.e -side left -expand y -fill x -padx 2
+}
+
+proc scaleentry { name labargs entargs entbind unitargs sclargs } {
+    eval frame $name
+    eval label $name.l -anchor e $labargs
+    eval entry $name.e -relief sunken $entargs
+    eval label $name.u -anchor w $unitargs
+    eval scale $name.s $sclargs -len 200 -from 0 -orient h -showvalue 0 -width 7
+    bind $name.e <Return> $entbind
+    pack $name.l	-side left
+    pack $name.e $name.u -side left -pady 2 -padx 2
+    pack $name.s	-side left -pady 0 -padx 2 -expand y -fill x
+}
+
+proc tempname {fname} {
+    if [file isdirectory "/tmp"] {
+	return "/tmp/$fname"
+    } elseif [file isdirectory "C:/temp"] {
+	return "C:/temp/$fname"
+    } else {
+	return "tmp_$fname"; # life sucks
+    }
+}
+
+proc model_dial {} {
+    global visib mimg_h mimg_w pa_id1 pa_id2
+    if [winfo exists .mdl] {destroy .mdl}
+    toplevel .mdl
+    wm geometry .mdl +500+20
+    wm title .mdl {Model visibility}
+    wm resizable .mdl 0 0
+    set mpgm [tempname "model_BP.pgm"]
+    vistopgm $mpgm model
+    image create photo mimg -file $mpgm -palette 100
+    exec rm $mpgm
+    set mimg_h [image height mimg]; set mimg_w [image width mimg]
+    image create photo mimg2 -height [expr $mimg_h*2] -width [expr $mimg_w*2] -palette 100
+    mimg2 copy mimg -zoom 2
+    # mimg copy mimg -zoom 2 -- tut nicht mehr in tk8.0
+    canvas .mdl.c -height [expr $mimg_h*2] -width [expr $mimg_w*2] -closeenough 3
+    .mdl.c create image 1 1 -anchor nw -image mimg2
+    pack .mdl.c
+}
+
+proc project_dial {} {
+    global visib vimg_h vimg_w pa_id1 pa_id2
+    if [winfo exists .ph] {destroy .ph}
+    toplevel .ph
+    wm geometry .ph +750+20
+    wm title .ph {Projection dial}
+    wm resizable .ph 0 0
+    regsub {.*/} $visib {} vpgm
+    set vpgm [tempname "${vpgm}_BP.pgm"]
+    vistopgm $vpgm
+    image create photo vimg -file $vpgm -palette 100
+    exec rm $vpgm
+    set vimg_h [image height vimg]; set vimg_w [image width vimg]
+    image create photo vimg2 -height [expr $vimg_h*2] -width [expr $vimg_w*2] -palette 100
+    vimg2 copy vimg -zoom 2
+    # vimg copy vimg -zoom 2 -- tut nicht mehr in tk8.0
+    canvas .ph.c -height [expr $vimg_h*2] -width [expr $vimg_w*2] -closeenough 3
+    .ph.c create image 1 1 -anchor nw -image vimg2
+    .ph.c create oval 0 0 1 1 -outline red -tags rmax
+    .ph.c create oval 0 0 1 1 -outline red -tags rmin
+    set pa_id1 [.ph.c create line 0 0 1 1 -fill red -tags angle -arrow last]
+    set pa_id2 [.ph.c create line 0 0 1 1 -fill red]
+    adj_proj_dials
+    .ph.c bind angle <1>		{ dial_proja %x %y; new_proj }
+    .ph.c bind angle <B1-Motion>	{ dial_proja %x %y; new_proj }
+    .ph.c bind rmax  <1>		{ dial_rad rmax %x %y }
+    .ph.c bind rmax  <B1-Motion>	{ dial_rad rmax %x %y; new_proj }
+    .ph.c bind rmax  <ButtonRelease-1>	{ dial_rad rmax %x %y; new_proj }
+    .ph.c bind rmin  <1>		{ dial_rad rmin %x %y }
+    .ph.c bind rmin  <B1-Motion>	{ dial_rad rmin %x %y; new_proj }
+    .ph.c bind rmin  <ButtonRelease-1>	{ dial_rad rmin %x %y; new_proj }
+    pack .ph.c
+}
+
+proc dial_proja {x y} {
+    global proja vimg_h vimg_w
+    set t [expr atan2($vimg_h+1-$y,$x-$vimg_w-1)*180.0/3.1416]
+    set proja [expr ($t<0)? $t+360 : $t]
+}
+
+set rmodel 0
+proc dial_rad {rv x y} {
+    global $rv vimg_h vimg_w rmax rmodel
+    set x [expr $x-$vimg_w-1]; set y [expr $vimg_h+1-$y]
+    set $rv [expr sqrt($x*$x + $y*$y)/2]
+    cnv_circle [expr 2*$$rv] $rv
+    if {$rmax > $rmodel} {new_model}
+}
+
+proc cnv_circle {r t} {
+    global vimg_h vimg_w
+    .ph.c coords $t [expr $vimg_w-$r+1] [expr $vimg_h-$r+1] [expr $vimg_w+$r+1] [expr $vimg_h+$r+1]
+}
+
+proc adj_proj_dials {} {
+    global proja rmin rmax vimg_h vimg_w pa_id1 pa_id2
+    if [winfo exists .ph] {
+	set cospa [expr cos($proja*3.1416/180)]
+	set sinpa [expr sin($proja*3.1416/180)]
+	.ph.c coords $pa_id1\
+		[expr $vimg_w * (1-$cospa) +1]	[expr $vimg_h * (1+$sinpa) +1]\
+		[expr $vimg_w * (1+$cospa) +1]	[expr $vimg_h * (1-$sinpa) +1]
+	.ph.c coords $pa_id2\
+		[expr $vimg_w-2*$rmax*$sinpa+1]	[expr $vimg_h-2*$rmax*$cospa+1]\
+		[expr $vimg_w+2*$rmax*$sinpa+1]	[expr $vimg_h+2*$rmax*$cospa+1]
+	cnv_circle [expr 2*$rmax] rmax
+	cnv_circle [expr 2*$rmin] rmin
+    }
+}
+
+proc new_model {args} {
+    mk_new_model
+    if [winfo exists .mdl] {
+	 set mpgm [tempname "model_BP.pgm"]
+	 vistopgm $mpgm test
+	 image create photo mimg -file $mpgm -palette 100
+	 exec rm $mpgm
+	 set mimg_h [image height mimg]; set mimg_w [image width mimg]
+	 mimg2 copy mimg -zoom 2
+    }
+    update
+}
+
+#############################################################################
+#				The Plot
+#
+if {$plot_device == ".plw.plot/XTK"} {
+    toplevel .plw -bd 0
+    pgplot .plw.plot -width 20c -height 22c -bg Black -bd 0 -maxcolors 4
+    pack .plw.plot -expand y -fill both -padx 0 -pady 0
+}
+
+#
+############################## Model view ##############################
+#
+toplevel .mv
+set mv_size 256
+set mv_centx 128
+set mv_centy 128
+canvas .mv.c -width $mv_size -height $mv_size
+
+set lo1 [expr $mv_centx-5]; set hi1 [expr $mv_centx+5]
+set lo2 [expr $mv_centx-2]; set hi2 [expr $mv_centx+2]
+set lo3 0;   set hi3 0
+
+.mv.c create oval $lo1 $lo1 $hi1 $hi1 -fill yellow -outline yellow -tags primary
+.mv.c create oval $lo2 $lo2 $hi2 $hi2 -fill orange -outline orange -tags secondary
+.mv.c create oval $lo3 $lo3 $hi3 $hi3 -fill red    -outline red    -tags tertiary
+pack .mv.c
+
+proc set_modelview {v e op} {
+    global mv_size mv_centx mv_centy co1a co1s co1r co2a co2s co2r cnta cntd
+
+    set mv_centx [expr $mv_size/2 * (1 + $cntd/64 * cos($cnta * 3.141/180.))]
+    set mv_centy [expr $mv_size/2 * (1 - $cntd/64 * sin($cnta * 3.141/180.))]
+    .mv.c coords primary [expr $mv_centx-5] [expr $mv_centy-5] [expr $mv_centx+5] [expr $mv_centy+5]
+
+    set x [expr $mv_centx + $mv_size/2 * $co1s/64 * cos($co1a * 3.141/180.)]
+    set y [expr $mv_centy - $mv_size/2 * $co1s/64 * sin($co1a * 3.141/180.)]
+    set r [expr 5. * $co1r]
+    .mv.c coords secondary [expr $x-$r] [expr $y-$r] [expr $x+$r] [expr $y+$r]
+
+    if {$co2r > 0.} {
+	set x [expr $mv_centx + $mv_size/2 * $co2s/64 * cos($co2a * 3.141/180.)]
+	set y [expr $mv_centy - $mv_size/2 * $co2s/64 * sin($co2a * 3.141/180.)]
+	set r [expr 5. * $co2r]
+	.mv.c coords tertiary [expr $x-$r] [expr $y-$r] [expr $x+$r] [expr $y+$r]
+    }
+}
+
+proc drag_model {which x y} {
+    # which = 2 for secondary, 3 for tertiary
+    global mv_size co1a co1s co1r co2a co2s co2r
+
+    set r [expr 5. * {($which == 2) ? $co1r : $co2r}]
+    .mv.c coords secondary [expr $x-$r] [expr $y-$r] [expr $x+$r] [expr $y+$r]
+
+    set dx [expr ($x * 2./$mv_size - 1.)]; # still in canvas-pixels!
+    set dy [expr (1. - $y * 2./$mv_size)]
+
+    #puts "component $which dragged to $x $y => delta $dx $dy"
+
+    set r [expr sqrt($dx*$dx + $dy*$dy) * 64.]
+    set a [expr atan2($dy,$dx) * 180./3.141]
+    if {$a < 0.} { set a [expr $a + 360.] }
+
+    if {$which == 2} {
+	set co1s $r; set co1a $a
+    } else {
+	set co2s $r; set co2a $a
+    }
+    new_model
+}
+.mv.c bind secondary <B1-Motion> { drag_model 2 %x %y }
+.mv.c bind tertiary  <B1-Motion> { drag_model 3 %x %y }
+
+bind .mv <KeyPress> { puts "pressed %K" }
+bind .mv <Key-Right> { set co1a [expr $co1a + 1]; if {$co1a>=360} {set co1a [expr $co1a-360]}; new_model}
+bind .mv <Key-Left>  { set co1a [expr $co1a - 1]; if {$co1a <  0} {set co1a [expr $co1a+360]}; new_model}
+bind .mv <Key-Down>  { if {$co1s > 0.5 } { set co1s [expr $co1s - 0.5] }; new_model}
+bind .mv <Key-Up>    { if {$co1s < 63.5} { set co1s [expr $co1s + 0.5] }; new_model}
+bind .mv <Key-Next>  { if {$co1r > 0.05} { set co1r [expr $co1r - 0.05] }; new_model}
+bind .mv <Key-Prior> { if {$co1r < 1.95} { set co1r [expr $co1r + 0.05] }; new_model}
+
+trace variable co1a w set_modelview
+trace variable co1s w set_modelview
+trace variable co1r w set_modelview
+trace variable co2a w set_modelview
+trace variable co2s w set_modelview
+trace variable co2r w set_modelview
+trace variable cnta w set_modelview
+trace variable cntd w set_modelview
+
+#############################################################################
+#				Menu Bar
+#
+frame .mbar -relief raised -bd 2
+#
+# Project
+#
+menubutton .mbar.pr -text {Project} -menu .mbar.pr.m
+menu .mbar.pr.m
+
+.mbar.pr.m add command -label {Read Fit-file} -command {
+    set nm [rkFileDialog .fd {Select Fit-file to read:} . {*.fit}]
+    if {$nm != {}} { ReadFit $nm }
+}
+
+proc set_bfffile {} {
+    global bfffile phase
+
+    if {$phase == ""}		    { set defname "Vis.bff"
+    } elseif [regexp {_bip} $phase] { set defname "Bi.bff"
+    } else			    { set defname "KT.bff"
+    }
+    set bfffile [rkFileDialog .fd {Enter bff-file to write:} $defname {*.bff}]
+}
+
+set bfffile {}
+.mbar.pr.m add command -label {Call bff} -command {
+    set_bfffile
+    if {$bfffile == {}} { break }
+    write_bff $bfffile
+    wm iconify .; if [winfo exists .ph] {wm iconify .ph}
+    update; exec bff $bfffile >&@stdout
+    regsub {\.[^.]*$} $bfffile {.fit} nm
+    ReadFit $nm
+    wm deiconify .; if [winfo exists .ph] {wm deiconify .ph}
+}
+
+.mbar.pr.m add command -label {Call amf} -command {
+    set_bfffile
+    if {$bfffile == {}} { break }
+    write_bff $bfffile
+    wm iconify .; if [winfo exists .ph] {wm iconify .ph}
+    update; exec amf $bfffile >&@stdout
+    regsub {\.[^.]*$} $bfffile {.fit} nm
+    ReadFit $nm
+    wm deiconify .; if [winfo exists .ph] {wm deiconify .ph}
+}
+
+.mbar.pr.m add command -label {Print} -command {
+    set nm $FitFile
+    regsub {\.fit} $nm ".tex" nm
+    puts "FitFile $FitFile => texfile $nm"
+    set nm [rkFileDialog .fd {Enter filename for hardcopy:} "$nm"]
+    if {$nm != {}} {
+	regsub {\.tex$} $nm "" nm
+	set cwd [pwd]; cd [file dirname $nm]; wm iconify .; update
+	hardcopy $nm
+	wm deiconify .; cd $cwd
+    }
+}
+
+.mbar.pr.m add command -label {Write Data} -command {writedata}
+
+proc save_wo_comp {} {
+    global compsub phase
+
+    catch {destroy .swoc}
+    toplevel .swoc -class Dialog
+    wm title .swoc "Save without Companion"
+    frame .swoc.top -relief raised -bd 1
+    frame .swoc.bot -relief raised -bd 1
+    pack  .swoc.top .swoc.bot -side top -fill both
+
+    label .swoc.lab -justify left -text "Please enter filenames:" -anchor w
+    catch {.swoc.lab configure -font -Adobe-Times-Medium-R-Normal--*-180-* }
+
+    bind  Entry <Key-Tab> {
+	set str [complete_filename [%W get]]
+	if { $str != "" } {
+	    %W delete 0 end; %W insert end $str; # also puts cursor at end of text.
+	}
+	break;
+    }
+    bind Entry <Shift-Key-Tab>   { ;# drop through }
+    bind Entry <Control-Key-Tab> { ;# drop through }
+    bind Entry <Meta-Key-u> {	;# to upper case
+	set str [string toupper [string range [%W get] [%W index insert] end]]
+	%W delete insert end
+	%W insert end $str
+    }
+    bind Entry <Meta-Key-l> {	;# to lower case
+	set str [string tolower [string range [%W get] [%W index insert] end]]
+	%W delete insert end
+	%W insert end $str
+    }
+    bind Entry <Meta-Key-c> {	;# capitalize
+	set str [string range [%W get] [%W index insert] end]
+	set str "[string toupper [string index $str 0]][string tolower [string range $str 1 end]]"
+	%W delete insert end
+	%W insert end $str
+    }
+
+    set compsub(vis)  "csub.fits_tvis"
+    set compsub(dvis) "csub.fits_dtvis"
+    labentry .swoc.vis  {-width 12 -text "Visibility:" } {-textvar compsub(vis) } {
+	regsub "fits_" $compsub(vis) "fits_d" compsub(dvis)
+	if {$phase != ""} {
+	    regsub {fits_.*$} $compsub(vis) "fits_$compsub(pext)" compsub(pha)
+	    regsub "fits_" $compsub(pha) "fits_d" compsub(dpha)
+	}
+    }
+    labentry .swoc.dvis {-width 12 -text "Delta Visib:"} {-textvar compsub(dvis)}	{}
+    pack .swoc.lab .swoc.vis .swoc.dvis -in .swoc.top -fill x -padx 3m -pady 1m -expand y
+
+
+    if {$phase != ""} {
+	set compsub(pext) "_pha"; regsub {^.*_} $phase "" compsub(pext)
+	set compsub(pha)  "csub.fits_$compsub(pext)"
+	set compsub(dpha) "csub.fits_d$compsub(pext)"
+	labentry .swoc.pha  {-width 12 -text "Phase:"      } {-textvar compsub(pha) }	{
+	    regsub "fits_" $compsub(pha) "fits_d" compsub(dpha)
+	}
+	labentry .swoc.dpha {-width 12 -text "Delta Phase:"} {-textvar compsub(dpha)}	{}
+	pack .swoc.pha .swoc.dpha -in .swoc.top -fill x -padx 3m -pady 1m -expand y
+    }
+    button .swoc.ok  -text "  Ok  " -command "set compsub(But) 1"
+    button .swoc.cnc -text "Cancel" -command "set compsub(But) 0"
+    pack .swoc.ok .swoc.cnc -in .swoc.bot -side left\
+	    -expand 1 -padx 3m -pady 3m -ipadx 2m -ipady 1m
+
+    CenterToplevel .swoc
+
+    # Set a grab and claim the focus too.
+    set oldFocus [focus]
+    grab .swoc
+    focus .swoc.vis.e
+
+    # Wait for the user to respond, then restore the focus and
+    # return the index of the selected button.
+    tkwait variable compsub(But)
+    destroy .swoc
+    focus $oldFocus
+
+    if {$compsub(But)} {
+	if {$phase == ""} {
+	    save_cs $compsub(vis) $compsub(dvis)
+	} else {
+	    save_cs $compsub(vis) $compsub(dvis) $compsub(pha) $compsub(dpha)
+	}
+    }
+    return;
+}
+
+
+.mbar.pr.m add command -label {Save without Comp.} -command save_wo_comp
+
+set resi(vis) ""
+set resi(pha) ""
+.mbar.pr.m add command -label {Save Residuals} -command {
+    set resi(vis)  [rkFileDialog .fd {Select file for residual of visibility} residual.fits_vis]
+    if {$phase == ""} {
+	save_resi $resi(vis)
+    } else {
+	set pha_ext "_pha"; regsub {^.*_} $phase "" pha_ext
+	set resi(pha) $resi(vis); regsub {fits_.*$} $resi(pha) "fits_$pha_ext" resi(pha)
+	set resi(pha)  [rkFileDialog .fd {Select file for residual of phase} $resi(pha)]
+	save_resi $resi(vis) $resi(pha)
+    }
+}
+
+.mbar.pr.m add command -label {Call maxbright} -command {
+    if [info exists compsub(vis)] {
+	set csub_root $compsub(vis)
+	regsub {fits_.*$} $csub_root {fits_} csub_root
+    } else {
+	set csub_root "csub.fits_"
+    }
+    exec maxbright -root $csub_root -rmin $rmin -rmax $rmax\
+	    -title "$title, companion subtracted" >&@stdout
+}
+
+.mbar.pr.m add command -label {Projection-Dial} -command { project_dial }
+.mbar.pr.m add command -label {Model visibility} -command { model_dial }
+.mbar.pr.m add command -label {Replot} -command { replot }
+.mbar.pr.m add command -label {Quit} -command { destroy . }
+#
+# Load...
+#
+set filt(visib) {*vis}
+set filt(dvisi) {*d*vis}
+set filt(phase) {*[bk][it]ph}
+set filt(dphas) {*d[bp][ih][pa]}
+set filt(mask)  {*fits_m*}
+
+menubutton .mbar.ld -text {Load} -menu .mbar.ld.m
+menu .mbar.ld.m
+proc load_file {wtitle var {dvar {}}} {
+    global rkPriv filt title $var $dvar
+    set nm [rkFileDialog .fd $wtitle "." $filt($var)]
+    if {$nm != {}} {
+	set $var $nm; set filt($var) $rkPriv(FileDialogFilter)
+	new_data $var
+	if {$dvar != {}} {
+	    regsub {fits_} $nm {fits_d} nm
+	    puts "Looking for $nm"
+	    if {[file exists $nm]} {
+		#&& [rk_dialog .dd {Load delta?} "Load $nm as delta?" question 1 {No} {Yes}]
+		set $dvar $nm; new_data $dvar
+	    }
+	}
+	if {$title == ""} { set title [make_headline $nm] }
+    }
+}
+
+.mbar.ld.m add command -label {Visibility} -command { load_file {Select visibility:} visib dvisi }
+.mbar.ld.m add command -label {Delta Vis.} -command { load_file {Select delta of visibility:} dvisi }
+.mbar.ld.m add command -label {Phase}	   -command { load_file {Select phase:} phase dphas }
+.mbar.ld.m add command -label {Delta Phase} -command {load_file {Select delta of phase:} dphas }
+.mbar.ld.m add command -label {Mask}	   -command { load_file {Select mask:} mask }
+#
+# Show...
+#
+menubutton .mbar.sh -text {Show} -menu .mbar.sh.m
+menu .mbar.sh.m
+
+proc display {fname} {
+    if [catch "exec xpaget ds9 version"] {
+	# no ds9 present, replicate a new one
+	exec ds9 $fname &
+	after 1000; # give it a second to come up
+    } else {
+	exec xpaset -p ds9 file "$fname"
+    }
+}
+
+.mbar.sh.m add command -label {Visibility } -command {display $visib}
+.mbar.sh.m add command -label {Delta Vis. } -command {display $dvisi}
+.mbar.sh.m add command -label {Phase      } -command {display $phase}
+.mbar.sh.m add command -label {Delta Phase} -command {display $dphas}
+.mbar.sh.m add command -label {Mask       } -command {display $mask}
+.mbar.sh.m add command -label {Residual Vis.}  -command {display $resi(vis)}
+.mbar.sh.m add command -label {Residual Phase} -command {display $resi(pha)}
+#
+# Estimate
+#
+menubutton .mbar.es -text {Estimate} -menu .mbar.es.m
+menu .mbar.es.m
+.mbar.es.m add command -label {Visibility-Factor}	-command {estimate visfak}
+.mbar.es.m add command -label {Center}			-command {estimate center}
+.mbar.es.m add command -label {Position-angle}		-command {estimate angle}
+.mbar.es.m add command -label {Separation+Brightness}	-command {estimate bratio}
+#
+# Set Angle...
+#
+menubutton .mbar.sa -text {Set Angle} -menu .mbar.sa.m
+menu .mbar.sa.m
+.mbar.sa.m add command -label "Proj.->Comp.1" -command {set co1a $proja; new_model}
+.mbar.sa.m add command -label "Proj.->Comp.2" -command {set co2a $proja; new_model}
+.mbar.sa.m add command -label "Comp.1->Proj." -command {set proja $co1a; new_proj}
+.mbar.sa.m add command -label "Comp.2->Proj." -command {set proja $co2a; new_proj}
+.mbar.sa.m add command -label "Comp.1 += 180" -command {
+    set co1a [expr {($co1a>=180) ? ($co1a-180) : ($co1a+180)}]; new_model
+}
+.mbar.sa.m add command -label "Comp.2 += 180" -command {
+    set co2a [expr {($co2a>=180) ? ($co2a-180) : ($co2a+180)}]; new_model
+}
+
+
+pack .mbar.pr .mbar.ld .mbar.sh .mbar.sa .mbar.es -side left -pady 0
+pack .mbar -padx 1 -pady 0 -fill x
+#
+# /************************* Filenames *************************/
+#
+frame .fnames -relief raised -bd 1
+labentry .titel {-text {Title:}   } {-textvariable title} {bell}
+labentry .visib {-text {Visib.:}  } {-textvariable visib} {new_data visib}
+labentry .dvisi {-text {Delta V.:}} {-textvariable dvisi} {new_data dvisi}
+labentry .phase {-text {Phase:}   } {-textvariable phase} {new_data phase}
+labentry .dphas {-text {Delta Ph:}} {-textvariable dphas} {new_data dphas}
+labentry .mask  {-text {Mask:}	   } {-textvariable mask}  {new_data mask}
+pack .titel .visib .dvisi .phase .dphas .mask -in .fnames -fill x -padx 1 -pady 1 -expand y
+#
+# /************************* Projection *************************/
+#
+frame .prorad -relief raised -bd 1
+scaleentry .proja {-width 10 -text {Proj. Angle:}}\
+		  {-width 5 -textvariable proja} {new_proj}\
+		  {-width 3 -text deg}\
+		  {-to 360 -ticki 45 -var proja -command new_proj}
+scaleentry .rmin {-width 10 -text {Radius: min}}\
+		 {-width 5 -textvariable rmin} {if {$rmin == {}} {set rmin 0}; new_proj}\
+		 {-width 3 -text pix}\
+		 {-to 64 -ticki 10 -var rmin -res 1 -command new_proj}
+scaleentry .rmax {-width 10 -text max}\
+		 {-width 5 -textvariable rmax} {new_proj; new_model}\
+		 {-width 3 -text pix}\
+		 {-to 64 -ticki 10 -var rmax -res 1 -command {new_proj; new_model}}
+
+frame .rad
+label .rad.lwid -width 10 -text {Stripwidth:} -anchor e
+entry .rad.ewid -width 5 -textvariable stripw
+bind  .rad.ewid <Return> { new_proj }
+checkbutton .rad.refmult -text {Ref. is multiple} -variable RefIsMult -command new_model
+label .rad.lfr  -text {Fitradius}
+label .rad.vfr  -textvariable fitrad
+pack  .rad.lwid -side left
+pack  .rad.ewid -side left -padx 2
+pack  .rad.vfr .rad.lfr -side right -padx 2
+pack  .rad.refmult
+#
+# /*************** Deviations ***************/
+#
+frame .dev
+label .dev.vl -text {Deviations: Visibility}
+label .dev.vv -textvariable errvis
+label .dev.pl -text Phase
+label .dev.pv -textvariable errpha
+label .dev.tl -text Total
+label .dev.tv -textvariable errtot
+pack .dev.vl .dev.vv .dev.pl .dev.pv .dev.tl .dev.tv -side left -padx 2 -pady 2
+pack .proja .rmin .rmax .rad .dev -in .prorad -padx 2 -pady 1 -fill both
+#
+# /*************** Plot Ranges ***************/
+#
+frame .rng -relief raised -bd 1
+label .rng.vla1 -text " Ranges: Visib.:"
+entry .rng.vmin -width 5 -textvar vismin
+bind  .rng.vmin <Return> { visrange; if [winfo exists .ph] {project_dial} }
+label .rng.vla2 -text -
+entry .rng.vmax -width 5 -textvar vismax
+bind  .rng.vmax <Return> { visrange; if [winfo exists .ph] {project_dial} }
+label .rng.pla1 -text "Phase:"
+entry .rng.pmin -width 5 -textvar phamin
+bind  .rng.pmin <Return> { pharange }
+label .rng.pla2 -text -
+entry .rng.pmax -width 5 -textvar phamax
+bind  .rng.pmax <Return> { pharange }
+pack .rng.vla1 .rng.vmin .rng.vla2 .rng.vmax -side left  -padx 1 -pady 3
+pack .rng.pmax .rng.pla2 .rng.pmin .rng.pla1 -side right -padx 1 -pady 3
+#
+# /************************* Companion 1 *************************/
+#
+frame .co1 -relief raised -bd 1
+scaleentry .co1a {-width 14 -text {Comp.1 - Angle:}}\
+		 {-width 6 -textvariable co1a} {new_model}\
+		 {-width 3 -text deg}\
+		 {-to 360 -tickint 45 -var co1a -command new_model}
+scaleentry .co1s {-width 14 -text {Separation:}}\
+		 {-width 6 -textvariable co1s} {new_model}\
+		 {-width 3 -text pix}\
+		 {-to 64 -tickint 10 -var co1s -res 0.1 -command new_model}
+scaleentry .co1r {-width 14 -text {Brightness:}}\
+		 {-width 9 -textvariable co1r} {new_model}\
+		 {-width 0 -text {}}\
+		 {-to 2 -tickint .3 -var co1r -res 0.01 -command new_model}
+pack .co1a .co1s .co1r -in .co1 -padx 2 -pady 1 -expand y -fill both
+#
+# /************************* Companion 2 *************************/
+#
+frame .co2 -relief raised -bd 1
+scaleentry .co2a {-width 14 -text {Comp.2 - Angle:}}\
+		 {-width 6 -textvariable co2a} {new_model}\
+		 {-width 3 -text deg}\
+		 {-to 360 -tickint 45 -var co2a -command new_model}
+scaleentry .co2s {-width 14 -text {Separation:}}\
+		 {-width 6 -textvariable co2s} {new_model}\
+		 {-width 3 -text pix}\
+		 {-to 64 -tickint 10 -var co2s -res 0.1 -command new_model}
+scaleentry .co2r {-width 14 -text {Brightness:}}\
+		 {-width 9 -textvariable co2r} {new_model}\
+		 {-width 0 -text {}}\
+		 {-to 1.5 -tickint .3 -var co2r -res 0.01 -command new_model}
+pack .co2a .co2s .co2r -in .co2 -padx 2 -pady 1 -expand y -fill both
+#
+# /************************* Center & VisFakt *************************/
+#
+frame .cnt -relief raised -bd 1
+scaleentry .cnta {-width 14 -text {Center - Angle:}}\
+		 {-width 6 -textvariable cnta} {new_model}\
+		 {-width 3 -text deg}\
+		 {-to 360 -ticki 45 -var cnta -command new_model}
+scaleentry .cntd {-width 14 -text {Distance:}}\
+		 {-width 6 -textvariable cntd} {new_model}\
+		 {-width 3 -text pix}\
+		 {-to 10 -ticki 2 -var cntd -res 0.01 -comm new_model}
+scaleentry .visf {-width 14 -text {Visibility Factor:}}\
+		 {-width 9 -textvariable visfak} {new_proj}\
+		 {-width 0 -text {}}\
+		 {-to 3.5 -ticki .5 -var visfak -res 0.01 -comm new_proj}
+pack .cnta .cntd .visf -in .cnt -padx 0 -pady 1 -expand y -fill both
+#
+# /************************* Main Window *************************/
+#
+pack .fnames .prorad .rng .co1 .co2 .cnt -padx 1 -pady 1 -fill both -expand y
+
+
+#############################################################################
+
+wm title . "binplot: no fit loaded"
+wm title .mv  "Model image"
+if [winfo exists .plw] {
+    wm title .plw "Plot window"
+    wm geometry .plw 740x824+0+128
+}
+wm geometry .		-70-42
+
+update
+set plot_id [pgopen $plot_device 1 2]
+
+puts "argv is $argv"
+for {set i 0} {$i < $argc} {incr i} {
+
+    set opt [lindex $argv $i]
+    incr i
+    if {$i < $argc} { set arg [lindex $argv $i] } else { set arg "" }
+
+    switch -glob -- $opt {
+	{-h*}  {
+	    puts " USAGE: $argv0 [-V visibility] [-dv delta_visibility] [Fitfile]"
+	    exit
+	}
+	{-V*}  {
+	    set visib $arg
+	    new_data visib
+	    if {$title == ""} { set title [make_headline $arg] }
+	}
+	{-dv*} { set dvisi $arg; new_data dvisi }
+	default { ReadFit $opt }
+    }
+}

@@ -1,0 +1,2093 @@
+#!@@PATH_TO_WISH@@
+# -*- Mode: tcl -*-
+#
+# mcspeckle
+# Created:     Mon Jul 10 11:36:28 2000 by Koehler@wmipp
+# Last Change: Tue Apr  5 15:43:39 2016
+#
+#############################################################################
+
+set OPT(Speckledir) "@@SPECKLE_DIR@@"
+set OPT(ghostview)  "@@GHOSTVIEW@@"
+set OPT(gmake)	    "@@GMAKE@@"
+
+if {[info exists env(TCL_RK_LIBRARY)] && [file isdir $env(TCL_RK_LIBRARY)]} {
+    # all right
+} elseif [file isdir "$OPT(Speckledir)/tcl-rk"] {
+    set env(TCL_RK_LIBRARY) "$OPT(Speckledir)/tcl-rk"
+} elseif [file isdir "./tcl-rk"] {
+    set env(TCL_RK_LIBRARY) "[pwd]/tcl-rk"
+} else {
+    puts "No Tcl-RK library found!"
+}
+lappend auto_path $env(TCL_RK_LIBRARY)
+rkInit
+
+option add *Dialog.msg.font {Times -18}
+option add *Entry.font {Helvetica -14}
+#
+# check if we're in the PATH
+#
+if {[string first [file dirname $argv0] $env(PATH)] < 0} {
+    puts "Binary-Speckle directory is not in PATH!"
+    puts "I can fix that for now, but you will have problems if you try to start"
+    puts "the makefiles by hand."
+    set env(PATH) "$env(PATH):[file dirname $argv0]"
+    puts "PATH is now \"$env(PATH)\""
+}
+
+
+set Default(Area) "Left Half"
+set Default(Split) "Vertically"
+
+if [file exists "$OPT(Speckledir)/.mcspecklerc"] { source "$OPT(Speckledir)/.mcspecklerc" }
+
+
+set Groupfile ""
+set Extension ""
+
+#############################################################################
+
+proc display {fname {wait 1000}} {
+    if [catch "exec xpaget 'ds9*' version"] {
+	puts "no ds9 running, trying to start it"
+	# no ds9 present, replicate a new one
+	exec ds9 $fname &
+	after $wait; # give it a second to come up
+    } else {
+	after 100; # wait a bit, else ds9 seems to be confused
+	if [catch "exec xpaset -p 'ds9*' file '[pwd]/$fname'"] {
+	    puts "error from xpaset, retrying in 0.1sec..."
+	    after 100; # wait a bit and try again
+	    exec xpaset -p "ds9*" file "[pwd]/$fname"
+	}
+    }
+}
+
+proc display_mean {fname} {
+
+    if [file exists "${fname}_mean"] {
+	append fname "_mean"
+    } else {
+	regsub {.(Z|gz)$} $fname "_mean" mnm
+	puts "$mnm?"
+	if [file exists $mnm] { set fname $mnm }
+    }
+    puts "Displaying $fname"
+    display $fname
+}
+
+#############################################################################
+
+proc Read_SpeckleDefaults {} {
+    global OPT Defaults
+
+    set FP [open "$OPT(Speckledir)/.specklerc" "r"]
+
+    set Defaults(bitpix) 16
+    set Defaults(prespeckle) "prespeckle"
+    set Defaults(badpixmaskopts) ""
+    set Defaults(badpixmask) ""
+    set Defaults(flatfield) ""
+    set Defaults(fitsmovie) "tkfmovie -enlarge 2 -lut heat"
+    set Defaults(KT-opts)   "-r 999"
+    set Defaults(Bisp-opts) ""
+    set Defaults(viscuts) ""
+    set Defaults(phacuts) ""
+    set Defaults(maxbrightopts) "-pmax 0.1"
+    while {[gets $FP line] > -1} {
+	#puts "-$line"
+	if [regexp {^#} $line] { continue }
+	regexp {^DefaultBitpix *= *([-81632]+)} $line m Defaults(bitpix)
+	regexp {^Prespeckle = (.+)$} $line m Defaults(prespeckle)
+	regexp {^BadpixMaskOpts *= *(.*)$}   $line m Defaults(badpixmaskopts)
+	regexp {^BadpixMaskFile *= *([^ ]+)} $line m Defaults(badpixmask)
+	regexp {^FlatfieldFile *= *([^ ]+)} $line m Defaults(flatfield)
+	regexp {^Fitsmovie *= *(.+) *$}   $line m Defaults(fitsmovie)
+	regexp {^KTphaseOpts *= *(.*) *$} $line m Defaults(KT-opts)
+	regexp {^BiphaseOpts *= *(.*) *$} $line m Defaults(Bisp-opts)
+	if [regexp {^VisiMinMax *= *([0-9.]+) +([0-9.]+) *$} $line m min max] {
+	    set Defaults(viscuts) "-min $min -max $max"
+	}
+	if [regexp {^PhasMinMax *= *([0-9.]+) +([0-9.]+) *$} $line m min max] {
+	    set Defaults(phacuts) "-min $min -max $max"
+	}
+	regexp {^MaxbrightOpts *= *(.*) *$} $line m Defaults(maxbrightopts)
+    }
+    close $FP
+    #puts "Defaults(prespeckle)     $Defaults(prespeckle)    "
+    #puts "Defaults(badpixmaskopts) $Defaults(badpixmaskopts)"
+    #puts "Defaults(badpixmask)	   $Defaults(badpixmask)    "
+    #puts "Defaults(bitpix)	   $Defaults(bitpix)        "
+}
+
+
+#############################################################################
+#####				Assignments				#####
+#############################################################################
+
+proc Assign_same_sky {} {
+    global ObjList OskyList RefList RskyList Ass_Sky
+
+    for {set ds 0} {$ds < [llength $ObjList]} {incr ds} {
+	set f [lindex $ObjList $ds]
+
+	set sky $ds
+	if {$sky >= [llength $OskyList]} { set sky [llength $OskyList]; incr sky -1 }
+	set Ass_Sky($f) [lindex $OskyList $sky]
+    }
+    if {$RefList != ""} {
+	for {set ds 0} {$ds < [llength $RefList]} {incr ds} {
+	    set f [lindex $RefList $ds]
+
+	    set sky $ds
+	    if {$sky >= [llength $RskyList]} { set sky [llength $RskyList]; incr sky -1 }
+	    set Ass_Sky($f) [lindex $RskyList $sky]
+	}
+    }
+}
+
+proc Assign_crossed_sky {{bit 1}} {
+    global ObjList OskyList RefList RskyList Ass_Sky
+
+    for {set ds 0} {$ds < [llength $ObjList]} {incr ds} {
+	set f [lindex $ObjList $ds]
+
+	set sky [expr $ds^$bit]
+	if {$sky >= [llength $OskyList]} { set sky [llength $OskyList]; incr sky -1 }
+	set Ass_Sky($f) [lindex $OskyList $sky]
+    }
+    if {$RefList != ""} {
+	for {set ds 0} {$ds < [llength $RefList]} {incr ds} {
+	    set f [lindex $RefList $ds]
+
+	    set sky [expr $ds^$bit]
+	    if {$sky >= [llength $RskyList]} { set sky [llength $RskyList]; incr sky -1 }
+	    set Ass_Sky($f) [lindex $RskyList $sky]
+	}
+    }
+}
+
+proc Edit_Assigns {{w "new"}} {
+    global ObjList OskyList RefList RskyList Ass_Sky Ass_Ref
+
+    if {$w == "new"} {
+	toplevel .ass;  set w .ass
+	wm title .ass "Assignments"
+    } else {
+	pack $w -side top -padx 0 -pady 0 -fill both -expand y
+    }
+    # experimental text widget
+    # would be better to calculate width from lengths of filenames
+    text $w.t -relief raised -yscroll "$w.s set" -width 125 -height 50
+    scrollbar $w.s -orient v -command "$w.t yview"
+    # end experiment
+
+    #frame $w.of -relief ridge -bd 2
+    #label $w.of.l -text "Object:"
+    #grid $w.of.l -sticky w -padx 1m -pady 3
+
+    $w.t insert end "Object:\n"
+
+    for {set ds 0} {$ds < [llength $ObjList]} {incr ds} {
+	set f [lindex $ObjList $ds]
+
+	frame $w.of$ds -relief sunken -bd 1
+	label $w.of$ds.l -text "$f:" -anchor e
+	eval tk_optionMenu $w.of$ds.sky Ass_Sky($f) $OskyList
+	if {$RefList != ""} {
+	    eval tk_optionMenu $w.of$ds.ref Ass_Ref($f) $RefList
+	} else {
+	    label $w.of$ds.ref -text "No Reference"
+	}
+	grid $w.of$ds.l $w.of$ds.sky $w.of$ds.ref -sticky we -padx 1m -pady 0
+	$w.t window create end -window $w.of$ds
+    }
+    #pack $w.of -side top
+
+    if {$RefList != ""} {
+	#frame $w.ff -relief ridge -bd 2
+	#frame $w.rf -bd 0
+	#label $w.rf.l -text "Reference:"
+	#grid $w.rf.l -sticky w -padx 1m -pady 3
+	$w.t insert end "\nReference:\n"
+
+	for {set ds 0} {$ds < [llength $RefList]} {incr ds} {
+	    set f [lindex $RefList $ds]
+
+	    frame $w.rf$ds -relief sunken -bd 1
+	    label $w.rf$ds.l -text "$f:"
+	    eval tk_optionMenu $w.rf$ds.sky Ass_Sky($f) $RskyList
+	    grid $w.rf$ds.l $w.rf$ds.sky -sticky we -padx 1m -pady 0
+	    $w.t window create end -window $w.rf$ds
+	}
+	#pack $w.rf -in $w.ff -side left -padx 2
+	#pack $w.ff -side top -fill x -expand y
+    }
+    frame $w.b -bd 0
+    button $w.b.same -width 16 -text "Same Sky-#"  -command Assign_same_sky
+    button $w.b.crsd -width 16 -text "Crossed Sky"	  -command "Assign_crossed_sky 1"
+    button $w.b.dcsd -width 16 -text "Double-crossed Sky" -command "Assign_crossed_sky 2"
+    pack $w.b.same $w.b.crsd $w.b.dcsd -side left -padx 3m -pady 2m -fill x -expand y
+
+    if {$w == ".ass"} {
+	button $w.b.q -width 16 -text "Dismiss" -command { destroy .ass }
+	pack $w.b.q -side left -padx 5m -pady 2m -fill x -expand y
+    }
+    pack $w.b -side bottom -fill x ;#-expand y
+
+    # experimentel text widget
+    pack $w.s -side right -fill y
+    pack $w.t -side left -fill both -expand y
+}
+
+
+#############################################################################
+#####			View mean or shift&add frames			#####
+#############################################################################
+
+proc View_Frames {w title ext} {
+    global OPT Defaults Groupfile Extension ObjList RefList ObjName
+    global StarList current$ext
+
+    destroy $w
+    toplevel $w
+    wm title $w $title
+    set current$ext 0
+    set i 0
+    set ViewExten "${Extension}$ext"
+    set StarList [concat $ObjList $RefList]
+    set maxcur [llength $StarList]; incr maxcur -1
+    foreach f $StarList {
+	#puts "#$i - $f"
+	set full "$f$ViewExten"
+	radiobutton $w.b$i -variable current$ext -anchor w -value $i\
+		-text "$f ($ObjName($f))" -command "update; display $full"
+	pack $w.b$i -side top -pady 1 -padx 2 -fill x -expand 1
+	incr i
+    }
+    frame $w.b -relief ridge -bd 0
+    button $w.b.prev -text "Prev" -command "
+	if {\$current$ext > 0} {
+	    incr current$ext -1; update
+	    display \"\[lindex \$StarList \$current$ext\]$ViewExten\"
+	}
+    "
+    button $w.b.next -text "Next" -command "
+	if {\$current$ext < $maxcur} {
+	    incr current$ext; update
+	    display \"\[lindex \$StarList \$current$ext\]$ViewExten\"
+	}
+    "
+    button $w.b.quit -text "Done" -command "destroy $w"
+
+    pack $w.b.prev $w.b.next $w.b.quit\
+	    -side left -padx 1m -pady 3 -ipady 0 -fill both -expand y
+    pack $w.b -ipadx 4 -ipady 2 -padx 1 -pady 1 -fill x -expand y
+
+    display "[lindex $StarList 0]$ViewExten"
+}
+
+#############################################################################
+#####				Select Datafiles			#####
+#############################################################################
+
+proc Select_Datafiles {} {
+    global filelist Split isref boxcnt rmlastframe
+
+    wm withdraw .
+    set filter [rkStringDialog .filt "Filter?"\
+		    "Pattern for data files:" [list "*.fits{,.Z}" "*.fits" "*.FITS" "*.fits.gz" "*" "*.gz"]]
+    if {$filter == ""} { exit }
+    # allow mainwin to become REALLY big, like 4K
+    wm maxsize . 4096 2048
+    wm deiconify .
+
+    set filelist {}
+    destroy .f
+    frame .f -bd 0
+
+    frame .f.mf -relief raised -bd 2
+    menubutton .f.mf.area -text "All Areas..." -menu .f.mf.area.m -anchor w
+    menu .f.mf.area.m
+    foreach a { "Left Half" "Right Half" "Bottom Half" "Top Half" "Full Frame"\
+		"Adonis" "Adon.Left" "Adon.Right" "Adon.Bottom" "Adon.Top" } {
+	.f.mf.area.m add command -label $a\
+		-command "foreach f \$filelist { set Area(\$f) {$a} }"
+    }
+
+    menubutton .f.mf.split -text "Split all..." -menu .f.mf.split.m -anchor w
+    menu .f.mf.split.m
+    foreach a { "Vertically" "Horizontally"\
+		"Bot.lft/Top rgt" "Bot.rgt/Top lft" "not at all" } {
+	.f.mf.split.m add command -label $a\
+		-command "foreach f \$filelist { set Split(\$f) {$a} }"
+    }
+
+    menubutton .f.mf.isref -text "Reference" -menu .f.mf.isref.m -anchor w
+    menu .f.mf.isref.m
+
+    set rmlastframe 0
+    checkbutton .f.mf.lastfr -text "Remove last frame" -var rmlastframe
+
+    label .f.mf.flb -text "Filter:  $filter" -anchor e
+
+    pack .f.mf.area .f.mf.split .f.mf.isref .f.mf.lastfr -side left -padx 4 -pady 0
+    pack .f.mf.flb -side right -padx 1m -pady 1 -fill x -expand y
+
+    pack .f.mf -side top -padx 1 -pady 1 -fill x
+
+    # experimental text widget
+    text .f.t -relief raised -yscroll ".f.s set" -width 146 -height 50
+    scrollbar .f.s -orient v -command ".f.t yview"
+    # end experiment
+
+    catch "unset isref"
+    set boxcnt 0
+    set maxl 0
+    foreach f [lsort [glob -nocomplain $filter]] {
+	if { ![file isdirectory $f]} {
+	    set infp [gzopen $f]
+	    set line [read $infp 80]
+	    if [regexp {^SIMPLE  =                    T} $line] {
+		lappend filelist $f
+		create_cubemenu $f
+		set l [string length "$f  "]	;# heuristic padding
+		if {$maxl < $l} { set maxl $l; puts "max len $maxl"}
+	    }
+	    catch {close $infp}
+	}
+    }
+    trace variable Split w split_trace
+
+    for {set i 0} {$i < $boxcnt} {incr i} {
+	.f.cb$i.fn configure -width $maxl
+	update
+	puts "new w [winfo reqwidth .f.cb$i.fn]"
+    }
+
+    frame .f.bf -bd 0
+    button .f.bf.nxt -width 10 -text "Next Step: Assigns" -command Initial_Assigns
+    button .f.bf.cnc -width 10 -text "Abort" -command exit
+    button .f.bf.hlp -width  5 -text "Help" -command {
+	if [catch {exec netscape -raise -remote\
+		"openURL(file:@@PATH_TO_DOCS@@/deconvolution.html#split,new-window)"}] {
+	    exec netscape "file:@@PATH_TO_DOCS@@/deconvolution.html#split" &
+	}
+    }
+    pack .f.bf.nxt .f.bf.hlp .f.bf.cnc -side left -padx 5m -pady 2m -fill x -expand y
+    # pack the button frame before the text widget so that it fills the entire bottom
+    pack .f.bf -side bottom -fill x
+
+    # pack the text widget and its scroll bar
+    pack .f.s -side right -fill y
+    pack .f.t -side left -fill both -expand y
+
+    pack .f  -side top -padx 0 -pady 0 -fill both -expand y
+}
+
+set objcnt 0
+set refcnt 0
+set DefWas 0 ;# 0=Obj, 1=Osky, 2=Ref, 3=Rsky
+set ObjDefWas { 0 1 1 0 }
+set RefDefWas { 2 3 3 2 }
+set WasNames { "Object" "Obj-Sky" "Reference" "Ref-Sky" "O+R-Sky" "Nothing" }
+
+
+proc create_cubemenu {fname} {
+    global Default Box Naxis1 Naxis2 Naxis3 ObjName isref rmlastframe
+    global boxcnt objcnt refcnt DefWas ObjDefWas RefDefWas WasNames Area Split Was1 Was2
+
+    set box ".f.cb$boxcnt"
+    set Box($fname) $box
+    set ObjName($fname) [string trim [get_fitskey {OBJECT  } $fname]]
+
+    if ![info exists isref($ObjName($fname))] {
+	.f.mf.isref.m add checkbutton -label $ObjName($fname) -var isref($ObjName($fname))\
+		-command "set_to_ref \"$ObjName($fname)\""
+    }
+    if {([regexp -nocase {^(sharp|gc)} $ObjName($fname)] && [regexp {^sao} $fname]) ||\
+	    [regexp -nocase {^(PPM|HIP|PSF)} $ObjName($fname)]} {
+	set isref($ObjName($fname)) 1
+	set DefWas [lindex $RefDefWas $refcnt]; set refcnt [expr ($refcnt+1) % 2]
+    } else {
+	set isref($ObjName($fname)) 0
+	set DefWas [lindex $ObjDefWas $objcnt]; set objcnt [expr ($objcnt+1) % 2]
+    }
+    frame $box -relief ridge -bd 2
+    #
+    # file- & objectname: Ugly trick to make a 2-line label
+    #
+    label $box.fn -text "File: $fname,
+Object: $ObjName($fname)" -anchor w -justify left
+
+    #grid $box.fn - - - - - - -sticky we -padx 1m -pady 2
+    #
+    # 2.row: header
+    #
+    label $box.al  -text "Area:"
+    label $box.sl  -text "Split"
+    label $box.pl1
+    label $box.pl2
+
+    #grid $box.al $box.sl $box.pl1 x $box.pl2 -sticky w -padx 1m
+    #
+    # 3.row: optionmenus
+    #
+    set n1 [get_fitskey {NAXIS1  } $fname]; set Naxis1($fname) $n1
+    set n2 [get_fitskey {NAXIS2  } $fname]; set Naxis2($fname) $n2
+    set Naxis3($fname) [get_fitskey {NAXIS3  } $fname]
+    if {$Naxis3($fname) == "???"} { set Naxis3($fname) 1 }
+
+    if {$rmlastframe == 0 && $Naxis3($fname) > 1 && [regexp -nocase {^NACO} $fname]} {
+	puts "$fname: NACO cube detected, activate rmlastframe"
+	set rmlastframe 1
+    }
+    #incr n1
+    #if {$n1 == $n2} {
+    #	 set Area($fname) "Adonis"
+    #} else {
+    #	 set Area($fname) "Left Half"
+    #}
+    set Area($fname) $Default(Area)
+    tk_optionMenu $box.area Area($fname)\
+	    "Left Half" "Right Half" "Bottom Half" "Top Half" "Full Frame" "Adonis"\
+	    "Adon.Left" "Adon.Right" "Adon.Bottom" "Adon.Top"
+    set Split($fname) $Default(Split)
+    tk_optionMenu $box.split Split($fname)\
+	    "Vertically" "Horizontally" "Bot.lft/Top rgt" "Bot.rgt/Top lft" "not at all"
+
+    set Was1($fname) [lindex $WasNames $DefWas]; set DefWas [expr $DefWas^1]
+    eval tk_optionMenu $box.was1 Was1($fname) $WasNames
+    $box.was1 configure -width 10
+
+    button $box.swap -text "<->" -padx 0 -command\
+	    "set t \$Was1($fname); set Was1($fname) \$Was2($fname); set Was2($fname) \$t"
+
+    set Was2($fname) [lindex $WasNames $DefWas]
+    eval tk_optionMenu $box.was2 Was2($fname) $WasNames
+    $box.was2 configure -width 10
+
+    split_trace Split $fname w; # trigger setup of label-names
+    #
+    # display button
+    #
+    button $box.dsp -text "Display" -command "display_mean $fname" -pady 1
+
+    #grid $box.fn $box.al $box.area $box.sl $box.split\
+	#$box.pl1 $box.was1 $box.swap $box.pl2 $box.was2 $box.dsp -sticky w -padx 1m
+    pack $box.fn $box.al $box.area $box.sl $box.split\
+	 $box.pl1 $box.was1 $box.swap $box.pl2 $box.was2 $box.dsp -side left -padx 1m
+
+    #grid $box.pl1  -row 1 -column 5 -sticky e -padx 1m
+    #grid $box.was1 -row 1 -column 6 -sticky e -padx 1m
+    #grid $box.swap -row 1 -column 7 -sticky e -padx 1m
+    #grid $box.pl2  -row 1 -column 8 -sticky e -padx 1m
+    #grid $box.was2 -row 1 -column 9 -sticky e -padx 1m
+    #grid $box.dsp  -row 1 -column 10 -sticky e -padx 1m
+
+    # experimental text widget:
+    ##.f.t insert end "File: $fname, Object: $ObjName($fname)"
+    .f.t window create end -window $box
+    # have to figure out how to stretch the window horizontally
+    # (note: option -stretch applies to the height only)
+    incr boxcnt
+}
+
+proc set_to_ref {objname} {
+    global filelist ObjName isref WasNames Was1 Was2
+
+    if $isref($objname) {
+	set star [lindex $WasNames 2]; set sky [lindex $WasNames 3];
+    } else {
+	set star [lindex $WasNames 0]; set sky [lindex $WasNames 1];
+    }
+    foreach f $filelist {
+	if {$ObjName($f) == $objname} {
+	    foreach w [list Was1($f) Was2($f)] {
+		eval set was $$w
+		#puts "$w = $was"
+		if {$was == "Object" || $was == "Reference"} {	    set $w $star
+		} elseif {$was == "Obj-Sky" || $was == "Ref-Sky"} { set $w $sky }
+	    }
+	}
+    }
+}
+
+proc split_trace {arr elem op} {
+    global Split Box Was1
+
+    set box $Box($elem)
+    $box.was2 configure -state normal
+    switch $Split($elem) {
+	"Vertically" {
+	    $box.pl1 configure -text "Top"
+	    $box.pl2 configure -text "Bottom"
+	}
+	"Horizontally" {
+	    $box.pl1 configure -text "Left"
+	    $box.pl2 configure -text "Right"
+	}
+	"Bot.lft/Top rgt" {
+	    $box.pl1 configure -text "Bot.Left"
+	    $box.pl2 configure -text "Top Rght"
+	}
+	"Bot.rgt/Top lft" {
+	    $box.pl1 configure -text "Bot.Rght"
+	    $box.pl2 configure -text "Top Left"
+	}
+	"not at all" {
+	    $box.pl1 configure -text "Whole"
+	    $box.pl2 configure -text ""
+	    $box.was2 configure -state disabled
+	    puts "$elem: $Was1($elem)"
+	    if {$Was1($elem) == "Obj-Sky"} { set Was1($elem) "Object" }
+	    if {$Was1($elem) == "Ref-Sky"} { set Was1($elem) "Reference" }
+	}
+    }
+}
+
+###################### Step 2 of Data Select: Assigns #######################
+
+proc Append2List {was subname xmin xmax ymin ymax} {
+    global ObjList OskyList RefList RskyList Xmin Xmax Ymin Ymax
+
+    if {$subname == ""} { return "" }
+    switch $was {
+	"Object"    { set name "obj/$subname" ; lappend ObjList  $name }
+	"Obj-Sky"   { set name "osky/$subname"; lappend OskyList $name }
+	"Reference" { set name "ref/$subname" ; lappend RefList  $name }
+	"Ref-Sky"   { set name "rsky/$subname"; lappend RskyList $name }
+	"O+R-Sky"   { set name "osky/$subname"; lappend OskyList $name; lappend RskyList $name }
+	"Nothing"   { return "" }
+    }
+    set Xmin($name) $xmin
+    set Xmax($name) $xmax
+    set Ymin($name) $ymin
+    set Ymax($name) $ymax
+    return $name
+}
+
+proc Initial_Assigns {} {
+    global filelist Naxis1 Naxis2 Naxis3 Area Split Was1 Was2
+    global ObjList OskyList RefList RskyList Parent Name1 Name2 Ass_Sky Ass_Ref
+
+    destroy .f	;# get rid of cubemenus
+    #
+    # 1. find out what we have, i.e. sub-filename and areas
+    #
+    set ObjList  {}
+    set OskyList {}
+    set RefList  {}
+    set RskyList {}
+    foreach f $filelist {
+	# remove ".fits", ".fits.gz", ".gz" etc.
+	regsub -nocase {(\.fits)?(\.gz|\.Z)?$}  $f "" nf
+
+	set xmin 0; set xmax [expr $Naxis1($f)-1]
+	set ymin 0; set ymax [expr $Naxis2($f)-1]
+
+	if {$xmax == 1023 && $ymax == 1025} {
+	    puts "$f: Smells like NACO cube mode, cropping top two rows"
+	    incr ymax -2
+	}
+	switch $Area($f) {
+	    "Left Half"   { set xmax [expr $Naxis1($f)/2 - 1] }
+	    "Right Half"  { set xmin [expr $Naxis1($f)/2]     }
+	    "Bottom Half" { set ymax [expr ($ymax+1)/2 - 1] }
+	    "Top Half"    { set ymin [expr ($ymax+1)/2]     }
+	    "Full Frame"  {}
+	    "Adonis"	  { incr ymax -1 }
+	    "Adon.Left"   { incr ymax -1; set xmax [expr $Naxis1($f)/2 - 1]}
+	    "Adon.Right"  { incr ymax -1; set xmin [expr $Naxis1($f)/2]    }
+	    "Adon.Bottom" { incr ymax -1; set ymax [expr $ymax/2 - 1]}
+	    "Adon.Top"    { incr ymax -1; set ymin [expr $ymax/2]    }
+	}
+	set xmin1 $xmin; set xmax1 $xmax; set xmin2 $xmin; set xmax2 $xmax
+	set ymin1 $ymin; set ymax1 $ymax; set ymin2 $ymin; set ymax2 $ymax
+	set xmid [expr ($xmin+$xmax+1)/2]
+	set ymid [expr ($ymin+$ymax+1)/2]
+
+	switch $Split($f) {
+	    "Vertically" {
+		set nm1 ${nf}t.fits; set ymin1 $ymid
+		set nm2 ${nf}b.fits; set ymax2 [expr $ymid-1]
+	    }
+	    "Horizontally" {
+		set nm1 ${nf}l.fits; set xmax1 [expr $xmid-1]
+		set nm2 ${nf}r.fits; set xmin2 $xmid
+	    }
+	    "Bot.lft/Top rgt" {
+		set nm1 ${nf}bl.fits; set xmax1 [expr $xmid-1]; set ymax1 [expr $ymid-1]
+		set nm2 ${nf}tr.fits; set xmin2 $xmid         ; set ymin2 $ymid
+	    }
+	    "Bot.rgt/Top lft" {
+		set nm1 ${nf}br.fits; set xmin1 $xmid         ; set ymax1 [expr $ymid-1]
+		set nm2 ${nf}tl.fits; set xmax2 [expr $xmid-1]; set ymin2 $ymid
+	    }
+	    "not at all" {
+		set nm1 ${nf}.fits
+		set nm2 ""
+	    }
+	}
+	set nm1 [Append2List $Was1($f) $nm1 $xmin1 $xmax1 $ymin1 $ymax1]
+	set nm2 [Append2List $Was2($f) $nm2 $xmin2 $xmax2 $ymin2 $ymax2]
+	set Parent($nm1) $f; set Name1($f) $nm1
+	set Parent($nm2) $f; set Name2($f) $nm2
+    }
+    #
+    # set Default Assigns
+    #
+    Assign_crossed_sky
+    if {$RefList != ""} {
+	for {set ds 0} {$ds < [llength $ObjList]} {incr ds} {
+	    set f [lindex $ObjList $ds]
+
+	    set ref [expr $ds % [llength $RefList]]
+	    set Ass_Ref($f) [lindex $RefList $ref]
+	}
+    }
+    #
+    # Add buttons to bottom
+    #
+    frame .bf -bd 0
+    button .bf.nxt -width 10 -text "Next Step: Prereduction" -command {
+	destroy .bf
+	Prereduction
+    }
+    button .bf.hlp -width  5 -text "Help" -command {
+	if [catch {exec netscape -raise -remote\
+		"openURL(file:@@PATH_TO_DOCS@@/deconvolution.html#assign,new-window)"}] {
+	    exec netscape "file:@@PATH_TO_DOCS@@/deconvolution.html#assign" &
+	}
+    }
+    button .bf.cnc -width 10 -text "Abort" -command exit
+    pack .bf.nxt .bf.hlp .bf.cnc -side left -padx 5m -pady 2m -fill x -expand y
+    pack .bf -side bottom -fill x
+
+    frame .f -bd 0
+    Edit_Assigns .f
+}
+
+
+#############################################################################
+#####				Prereduction				#####
+#############################################################################
+
+proc Prereduction {} {
+    global OPT Defaults Files_written skip_frames gzip_files delete_input
+
+    destroy .f
+    frame .f -bd 0
+
+    Read_SpeckleDefaults
+
+    frame .f.optf -bd 0
+
+    set skip_frames 1
+    checkbutton .f.skip -text "remove bad frames" -var skip_frames
+    grid .f.skip - -in .f.optf -padx 1m -pady 1m -sticky w
+
+    label .f.bpol -text "Badpixmask Options:" -anchor e
+    entry .f.bpoe -textvar Defaults(badpixmaskopts) -width 42
+    grid  .f.bpol .f.bpoe -in .f.optf -padx 1.2m -pady 1m -sticky we
+
+    rkEntryMenu .f.bpm -text "Predef. Badpixmask:" -textvariable Defaults(badpixmask)\
+	    -buttonwd 18 -entrywd 42 -relief flat
+    .f.bpm.b configure -pady 3
+    catch {eval .f.bpm additem [lsort [glob "$OPT(Speckledir)/Masks/*.fits" "$OPT(Speckledir)/Masks/*.fits.gz"]]}
+    grid  .f.bpm - -in .f.optf -padx .5m -pady 1m -sticky we
+
+    rkEntryMenu .f.flat -text "Flatfield:" -textvariable Defaults(flatfield)\
+	    -buttonwd 18 -entrywd 42 -relief flat
+    .f.flat.b configure -pady 3
+    catch {eval .f.flat additem [lsort [glob "$OPT(Speckledir)/Flats/*.fits" "$OPT(Speckledir)/Flats/*.fits.gz"]]}
+    grid  .f.flat - -in .f.optf -padx .5m -pady 1m -sticky we
+
+    #set gzip_files 1
+    #checkbutton .f.gzip -text "gzip input files afterwards" -var gzip_files
+    #grid  .f.gzip - -in .f.optf -padx 1m -pady 1m -sticky w
+
+    set delete_input 0
+    checkbutton .f.del -text "Delete input files afterwards" -var delete_input
+    grid  .f.del - -in .f.optf -padx 1m -pady 1m -sticky w
+
+    grid columnconfigure .f.optf 1 -weight 1
+
+    set Files_written 0
+    frame .f.butf -bd 0
+    button .f.write -width 14 -text "Write Makefile" -command {
+	Write_Makefile; set Files_written 1
+    }
+    button .f.start -width 14 -text ">>> Go! <<<" -command {
+	if {$Files_written == 0} { Write_Makefile; set Files_written 1 }
+	wm iconify .; catch "exec ./prered.make >& /dev/tty"; wm deiconify .
+	destroy .f
+	set Data_Selected 1
+    }
+    button .f.hlp -width 10 -text "Help" -command {
+	if [catch {exec netscape -raise -remote\
+		"openURL(file:@@PATH_TO_DOCS@@/deconvolution.html#prereduction,new-window)"}] {
+	    exec netscape "file:@@PATH_TO_DOCS@@/deconvolution.html#prereduction" &
+	}
+    }
+    button .f.exit  -width 10 -text "Exit" -command { exit }
+    pack .f.write .f.start .f.hlp .f.exit -in .f.butf -side left -padx 2m -pady 2m -fill x -expand y
+
+    pack .f.optf .f.butf -fill x -expand y
+    pack .f  -side top -padx 0 -pady 0 -fill both -expand y
+}
+
+proc Write_Prered {FP f {sky ""}} {
+    global Parent Defaults Xmin Xmax Ymin Ymax Naxis3 rmlastframe skip_frames
+
+    set pa $Parent($f)
+    #regsub {\.(gz|Z)$} $pa "" pa; # remove gz since prespeckle can't read gz yet
+
+    if {$sky == ""} {
+	puts $FP "${f}_hotp: [file dirname $f] $pa"
+    } else {
+	puts $FP "${f}_hotp: [file dirname $f] $pa ${sky}_hotp"
+    }
+    puts $FP "	$Defaults(prespeckle)\\"
+
+    if {$rmlastframe && $Naxis3($f) > 1} {
+	set nFr [expr $Naxis3($f) - 2]
+	puts $FP "		\"read $pa $Xmin($f)-$Xmax($f):$Ymin($f)-$Ymax($f):0-$nFr\"\\"
+    } else {
+	puts $FP "		\"read $pa $Xmin($f)-$Xmax($f):$Ymin($f)-$Ymax($f)\"\\"
+    }
+    puts $FP "		\"bitpix $Defaults(bitpix)\"\\"
+    if $skip_frames {
+	puts $FP "		\"rmframes\"\\"
+    }
+    if {$sky != ""} {
+	# sky given, must be obj or ref
+	puts $FP "		\"sub ${sky}_skip_mean\"\\"
+	if {$Defaults(flatfield) != ""} {
+	    puts $FP "\t	\"flatfield $Defaults(flatfield)\"\\"
+	}
+	puts $FP "		\"badpix -median -m ${sky}_maske\"\\"
+	if {$Naxis3($f) > 1} { puts $FP "		\"saa ${f}_hotp_saam ${f}_hotp_samp\"\\" }
+    } else {
+	# no extra sky given, must itself be sky
+	puts $FP "		\"writemean ${f}_skip_mean\"\\"
+	if {$Defaults(bitpix) < 0} { puts $FP "	\t\"bitpix 16\"\\" }
+	puts -nonewline $FP "		\"badpixmask $Defaults(badpixmaskopts) "
+	if {$Defaults(badpixmask) != ""} { puts -nonewline $FP "-im $Defaults(badpixmask) " }
+	puts $FP "${f}_maske\"\\"
+
+	if {$Defaults(bitpix) < 0} { puts $FP "	\t\"bitpix $Defaults(bitpix)\"\\" }
+	puts $FP "		\"sub\"\\"
+	if {$Defaults(flatfield) != ""} {
+	    puts $FP "\t	\"flatfield $Defaults(flatfield)\"\\"
+	}
+	puts $FP "		\"badpix -mean -m ${f}_maske\"\\"
+    }
+    puts $FP "		\"write ${f}_hotp\"\\"
+    puts $FP "		\"writemean ${f}_hotp_mean\"\\"
+    puts $FP "		exit\n"
+
+    if {$sky == ""} {
+	puts $FP "${f}_maske: ${f}_hotp\n"
+	puts $FP "${f}_skip_mean: ${f}_hotp\n\n"
+    }
+}
+
+proc Write_Makefile {} {
+    global OPT WasNames ObjName Naxis1 Naxis2 Naxis3 Xmin Xmax Ymin Ymax Parent
+    global Extension Ass_Sky Ass_Ref Name1 Name2
+    global filelist ObjList OskyList RefList RskyList gzip_files delete_input
+    #
+    # Prepare and Write Group
+    #
+    foreach f [concat $ObjList $OskyList $RefList $RskyList] {
+	set pa $Parent($f)
+	set ObjName($f) $ObjName($pa)
+	set Naxis1($f) [expr $Xmax($f)+1-$Xmin($f)]
+	set Naxis2($f) [expr $Ymax($f)+1-$Ymin($f)]
+	set Naxis3($f) $Naxis3($pa)
+    }
+    set Extension "_hotp"
+    Write_Groupfile "Main.grp"
+    set Extension ""
+    #
+    ###################### Now write the makefile ######################
+    #
+    set FP [open "prered.make" "w"]
+    puts $FP "#!/bin/sh\n#\n# Makefile for prereduction"
+    puts $FP "# Created on [clock format [clock seconds]]"
+    puts $FP "#\\\nexec $OPT(gmake) -kf \$0\n"
+    puts -nonewline $FP "science: BEGIN"
+    #
+    # print all target-filename
+    #
+    foreach f $filelist {
+	if {$Name1($f) != ""} { puts -nonewline $FP "\\\n    $Name1($f)_hotp" }
+	if {$Name2($f) != ""} { puts -nonewline $FP "\\\n    $Name2($f)_hotp" }
+    }
+    #puts $FP "\n	sed -e 's/roupfile:  *Input/roupfile:  Badpix/'\\"
+    #puts $FP   "	    -e 's/Extension: */Extension:  _hotp/' Input.grp > Badpix.grp"
+    #puts $FP "\n	mkgrpfile -i Input.grp -ext _hotp -o Badpix.grp"
+    #if {$gzip_files} { puts $FP "	echo \"gzip $filelist\" | add_job" }
+    puts $FP "\n	echo \"Last groupfile: Main.grp\" >> speckle.logbook"
+    if {$delete_input && \
+	[tk_dialog .ask "Really?" "Are you sure you want to delete the input files?"\
+		question 0 "Yes!" "Oops, No"] == 0} {
+	puts -nonewline $FP "	rm -f"
+	foreach f $filelist {
+	    regsub -nocase {(.gz|.Z)$} $f "" f
+	    puts -nonewline $FP " $f"
+	}
+	puts $FP ""
+    }
+    if [file exists "$OPT(Speckledir)/Sounds/prered_done.wav"] {
+	puts $FP "	-esdplay $OPT(Speckledir)/Sounds/prered_done.wav"
+    }
+    puts $FP "	@(echo -n \"prered.make  done   on \"; date) >> speckle.logbook"
+    puts $FP "	date"
+
+    puts $FP "\nBEGIN:\n\t@(echo -n \"prered.make started on \"; date) >> speckle.logbook"
+    puts $FP "\n% : %.gz\n	gunzip $<\n"
+    puts $FP "obj:\n	@mkdir obj\n"
+    puts $FP "osky:\n	@mkdir osky\n"
+    puts $FP "ref:\n	@mkdir ref\n"
+    puts $FP "rsky:\n	@mkdir rsky\n"
+
+    foreach f $OskyList { Write_Prered $FP $f }
+    foreach f $RskyList { Write_Prered $FP $f }
+
+    puts $FP "#############################################################################\n"
+
+    foreach f $ObjList { Write_Prered $FP $f $Ass_Sky($f) }
+    foreach f $RefList { Write_Prered $FP $f $Ass_Sky($f) }
+
+    close $FP
+    exec chmod u+rx "prered.make"
+}
+
+#############################################################################
+#####			Read/Write Groupfile				#####
+#############################################################################
+
+proc Read_Groupfile {fname} {
+    global Groupfile ObjList OskyList RefList RskyList
+    global Naxis1 Naxis2 Naxis3 ObjName Extension Ass_Sky Ass_Ref
+
+    set Groupfile $fname
+    set fp [gzopen $fname]
+    set Extension ""
+    set ObjList  ""
+    set OskyList ""
+    set RefList  ""
+    set RskyList ""
+    set List "no list"
+    set file "none"
+    catch {unset ObjName Ass_Sky Ass_Ref}
+
+    while {[gets $fp line] >= 0} {
+	if [regexp {^Extension: +([^ ]+)} $line match Extension] { #puts "Ext $Extension"
+	} elseif [regexp -nocase {^ *object *$} $line]	      { set List ObjList
+	} elseif [regexp -nocase {^ *obj(ect)?-sky *$} $line] { set List OskyList
+	} elseif [regexp -nocase {^ *reference *$} $line]     { set List RefList
+	} elseif [regexp -nocase {^ *ref(er)?-sky *$} $line]  { set List RskyList
+	} elseif [regexp -nocase {^File: +(.*) *$} $line match file] {
+	    puts "appending $file to $List"
+	    lappend $List $file
+	} elseif [regexp {^Obje[kc]t: +'? *([^']*) *'? *$} $line match objname] {
+	    #puts "$file is $objname"
+	    set ObjName($file) $objname
+	} elseif [regexp {^Lx: +0*([0-9]+) +Nx: +0*([0-9]+) +Mx: +0*([0-9]+)} $line match z y x] {
+	    set Naxis1($file) $x
+	    set Naxis2($file) $y
+	    set Naxis3($file) $z
+	} elseif [regexp {^ *>>> Assignments <<<} $line] {
+	    gets $fp line
+	    while {[gets $fp line] >= 0} {
+		if [regexp {^ *([0-9]+) +([0-9]+) +([0-9]+) +([0-9]+)} $line match obj osky ref rsky] {
+		    incr obj  -1; set f  [lindex $ObjList $obj]
+		    incr osky -1
+		    incr ref  -1; set rf [lindex $RefList $ref]
+		    incr rsky -1
+		    set Ass_Sky($f) [lindex $OskyList $osky]
+		    set Ass_Ref($f)  $rf
+		    set Ass_Sky($rf) [lindex $RskyList $rsky]
+		    puts "$f -> $Ass_Sky($f) -> $rf -> $Ass_Sky($rf)"
+		}
+	    }
+	}
+    }
+    catch "close $fp"
+}
+
+proc Write_Groupfile {fname} {
+    global Extension WasNames ObjName Naxis1 Naxis2 Naxis3
+    global Ass_Sky Ass_Ref Name1 Name2
+    global filelist ObjList OskyList RefList RskyList
+
+    set FP [open $fname "w"]
+    puts $FP "Name of this groupfile:  $fname "
+    puts $FP "Extension:  $Extension"
+    puts $FP "created by mcspeckle on [clock format [clock seconds]]"
+
+    set i 0
+    foreach List [list $ObjList $OskyList $RefList $RskyList] {
+	puts $FP "\n\n[lindex $WasNames $i] \n"
+	incr i
+	foreach f $List {
+	    puts $FP "File:  $f\nObject:  '$ObjName($f)'"
+	    puts $FP [format "Lx:  %05d     Nx:  %05d     Mx:  %05d  "\
+				$Naxis3($f) $Naxis2($f) $Naxis1($f)]
+	}
+    }
+    puts $FP "\n >>> Assignments <<<\n"
+    puts $FP " Object  Sky  Reference  Sky"
+    #
+    # Write Assignements
+    #
+    for {set ds 0} {$ds < [llength $ObjList]} {} {
+	set f [lindex $ObjList $ds]
+	#
+	# assign-numbers start with 1
+	#
+	set osky [lsearch -exact $OskyList $Ass_Sky($f)]; incr osky
+	if [llength $RefList] {
+	    set rf   $Ass_Ref($f)
+	    set ref  [lsearch -exact $RefList  $rf]	; incr ref
+	    set rsky [lsearch -exact $RskyList $Ass_Sky($rf)]; incr rsky
+	} else {
+	    set ref 0
+	    set rsky 0
+	}
+	incr ds
+	puts $FP [format " %3d     %2d   %5d      %2d" $ds $osky $ref $rsky]
+    }
+    close $FP
+}
+
+#############################################################################
+#####				Add Badpix				#####
+#############################################################################
+set Add_BP_fp ""
+set maskedit_verbose 1
+
+proc Add_BP_Display {} {
+    global Extension ObjList BPfileList current maxcur Add_BP_fp Ass_Sky
+
+    set f [lindex $BPfileList $current]
+    display "$f${Extension}_mean"
+    if {$Add_BP_fp != ""} {catch "close $Add_BP_fp"; set Add_BP_fp ""}
+    set Add_BP_fp [open "| maskedit verbose" w]
+    #puts	"---image is $f${Extension}_mean"
+    #puts	"---mask is $Ass_Sky($f)_maske"
+    puts $Add_BP_fp "image $f${Extension}_mean"
+    puts $Add_BP_fp "mask $Ass_Sky($f)_maske"
+    #puts $Add_BP_fp "verbose"
+    flush $Add_BP_fp
+    if {$current == 0} { .abp.b.prev configure -state disabled
+		} else { .abp.b.prev configure -state normal	}
+    if {$current == $maxcur} { .abp.b.next configure -state disabled
+		      } else { .abp.b.next configure -state normal	}
+}
+
+proc Correct_Badpix {} {
+    global Extension Add_BP_fp BPfileList current
+
+    puts $Add_BP_fp "region"
+    puts $Add_BP_fp "wmask"
+    puts $Add_BP_fp "wimage"
+    flush $Add_BP_fp
+    display "[lindex $BPfileList $current]${Extension}_mean"
+}
+
+
+proc Correct_BP_1Cube {FP f sky method} {
+    global Defaults Extension
+
+    puts $FP "${f}_hotp: ${sky}_maske"
+    puts $FP "	$Defaults(prespeckle)\\"
+    puts $FP "		\"read ${f}$Extension\"\\"
+    puts $FP "		\"bitpix $Defaults(bitpix)\"\\"
+    puts $FP "		\"badpix -$method -m ${sky}_maske\"\\"
+    puts $FP "		\"write ${f}_hotp\"\\"
+    puts $FP "		\"writemean ${f}_hotp_mean\"\\"
+    if {$f != $sky} {
+	puts $FP "\t	\"saa ${f}_hotp_saam ${f}_hotp_samp\"\\"
+    }
+    puts $FP "		exit\n"
+}
+
+
+
+proc Correct_BP_Cubes {dont_exec} {
+    global OPT Defaults Extension ObjList RefList OskyList RskyList Ass_Sky
+
+    Read_SpeckleDefaults
+    set FP [open "badpix.make" "w"]
+    puts $FP "#!/bin/sh\n#\n# Makefile for badpixel correction"
+    puts $FP "# Created on [clock format [clock seconds]]"
+    puts $FP "#\\\nexec $OPT(gmake) -kf \$0\n"
+    puts -nonewline $FP "science: BEGIN"
+    #
+    # print all target-filename
+    #
+    foreach f [concat $ObjList $RefList $OskyList $RskyList] {
+	puts -nonewline $FP "\\\n    $f$Extension"
+    }
+    puts $FP ""
+    if [file exists "$OPT(Speckledir)/Sounds/badpix_corr.wav"] {
+	puts $FP "	-esdplay $OPT(Speckledir)/Sounds/badpix_corr.wav"
+    }
+    puts $FP "	@(echo -n \"badpix.make  done   on \"; date) >> speckle.logbook"
+    puts $FP "	date"
+
+    puts $FP "\nBEGIN:\n\t@(echo -n \"badpix.make started on \"; date) >> speckle.logbook"
+    puts $FP "\n% : %.gz\n	gunzip $<\n"
+    puts $FP "obj:\n	@mkdir obj\n"
+    puts $FP "osky:\n	@mkdir osky\n"
+    puts $FP "ref:\n	@mkdir ref\n"
+    puts $FP "rsky:\n	@mkdir rsky\n"
+
+    foreach f $ObjList  { Correct_BP_1Cube $FP $f $Ass_Sky($f) median }
+    foreach f $RefList  { Correct_BP_1Cube $FP $f $Ass_Sky($f) median }
+    foreach f $OskyList { Correct_BP_1Cube $FP $f $f mean }
+    foreach f $RskyList { Correct_BP_1Cube $FP $f $f mean }
+
+    close $FP
+    exec chmod u+rx "badpix.make"
+    if {$dont_exec != 1} {
+	update
+	wm iconify .; catch "exec ./badpix.make >& /dev/tty"; wm deiconify .
+    }
+}
+
+proc Add_Badpix {} {
+    global Add_BP_fp ObjList RefList ObjName BPfileList current maxcur
+
+    toplevel .abp
+    wm title .abp "Add Badpixels"
+
+    frame .abp.mv -relief ridge -bd 2
+    radiobutton .abp.mv.s -variable maskedit_verbose -anchor w -value 0 -text "Silent" -command {
+	puts "maskedit silent"; puts $Add_BP_fp "silent" }
+    radiobutton .abp.mv.v -variable maskedit_verbose -anchor w -value 2 -text "Verbose" -command {
+	puts "maskedit verbose"; puts $Add_BP_fp "verbose" }
+
+    pack .abp.mv.s .abp.mv.v -side left -padx 2 -pady 1 -fill x -expand y
+    pack .abp.mv -padx 1 -pady 1 -fill x -expand y
+
+    frame .abp.r -relief ridge -bd 2
+    set current 0
+    set i 0
+    set BPfileList [concat $ObjList $RefList]
+    set maxcur [llength $BPfileList]; incr maxcur -1
+    foreach f $BPfileList {
+	#puts "#$i - $f"
+	radiobutton .abp.r.f$i -variable current -anchor w -value $i\
+		-text "$f ($ObjName($f))" -command Add_BP_Display
+	pack .abp.r.f$i -side top -pady 1 -padx 2 -fill x -expand y
+	incr i
+    }
+    pack .abp.r -ipadx 4 -ipady 2 -padx 1 -pady 1 -fill x -expand y
+
+    frame .abp.c -relief ridge -bd 2
+    label .abp.c.lx -text "Bad pixel at x="
+    entry .abp.c.ex -textvar badpix_x -width 4
+    label .abp.c.ly -text ", y="
+    entry .abp.c.ey -textvar badpix_y -width 4
+    button .abp.c.b -text "Add" -width 4 -command {
+	puts "setting pixel at $badpix_x $badpix_y"
+	puts $Add_BP_fp "set $badpix_x $badpix_y"
+	puts $Add_BP_fp "wmask"
+	puts $Add_BP_fp "wimage"
+	flush $Add_BP_fp
+	display "[lindex $BPfileList $current]${Extension}_mean"
+    }
+    pack .abp.c.lx .abp.c.ex .abp.c.ly .abp.c.ey -side left -fill x -expand y
+    pack .abp.c.b -side left -padx 1m -fill x -expand y
+
+    frame .abp.b -relief ridge -bd 2
+    button .abp.b.prev -text "Prev" -command { if {$current > 0} {incr current -1; Add_BP_Display} }
+    button .abp.b.corr -text "Correct\nBadpixels" -pady 0 -command Correct_Badpix
+    button .abp.b.next -text "Next" -command { if {$current < $maxcur} {incr current; Add_BP_Display} }
+    button .abp.b.quit -text "Done" -command {
+	if {$Add_BP_fp != ""} {catch "close $Add_BP_fp"; set Add_BP_fp ""}
+	destroy .abp
+	Correct_BP_Cubes [tk_dialog .ask "Correct Badpix?"\
+		"Correct bad pixels in data cubes now?" question 0 "Yes" "No"]
+    }
+
+    pack .abp.b.prev .abp.b.corr .abp.b.next .abp.b.quit\
+	    -side left -padx 1m -pady 3 -ipady 0 -fill both -expand y
+    pack .abp.c .abp.b -ipadx 4 -ipady 2 -padx 1 -pady 1 -fill x -expand y
+
+    Add_BP_Display
+    Add_BP_loop
+}
+
+proc Add_BP_loop {} {
+    update
+    if [winfo exists .abp] {
+	set fp [open "|xpaget \"ds9*\" regions" "r"]
+	while {[gets $fp line] > -1} {
+	    if [regexp {point} $line] {
+		Correct_Badpix
+		break
+	    }
+	}
+	catch "close $fp" ;# will fail if ds9 not yet ready
+	after 900 Add_BP_loop
+    }
+}
+
+#############################################################################
+#####				Show Movies				#####
+#############################################################################
+
+proc Show_Movies {} {
+    global Defaults Extension ObjList RefList
+
+    Read_SpeckleDefaults
+    set cmd $Defaults(fitsmovie)
+    foreach f [concat $ObjList $RefList] { lappend cmd "$f$Extension" }
+    eval exec $cmd &
+}
+
+#############################################################################
+#####				Define Subframes			#####
+#############################################################################
+
+proc BgBox_Range {v sz naxis} {
+    set hlp [expr $sz/2 + 1]	; if {$v < $hlp} { set v $hlp }
+    set hlp [expr $naxis - $hlp]; if {$v > $hlp} { set v $hlp }
+    return $v
+}
+
+proc BgBox_ChangeSize {} {
+    global Extension BGfileList current BgBox Naxis3
+
+    foreach f $BGfileList {
+	set full "$f${Extension}"
+	if {$Naxis3($f) > 1} { append full "_mean" }
+
+	regexp {([0-9.]+) x ([0-9.]+) @ ([0-9.]+) , ([0-9.]+)} $BgBox($f) match w h x y
+	set x [BgBox_Range $x $BgBox(w) [get_fitskey {NAXIS1  } $full]]
+	set y [BgBox_Range $y $BgBox(h) [get_fitskey {NAXIS2  } $full]]
+	set BgBox($f) "$BgBox(w) x $BgBox(h) @ $x , $y"
+    }
+    BgBox_Display
+}
+
+proc BgBox_Display {} {
+    global Extension BGfileList current maxcur BgBox
+
+    set f [lindex $BGfileList $current]
+    regexp {([0-9.]+) x ([0-9.]+) @ ([0-9.]+) , ([0-9.]+)} $BgBox($f) match w h x y
+    update
+    if [file exists "$f${Extension}_mean"] {
+	display "$f${Extension}_mean" 2500
+    } else {
+	display "$f${Extension}" 2500
+    }
+    while {42} {
+	set RFP [open "|xpaset 'ds9*' regions" "w"]
+	puts $RFP "image;box($x,$y,$w,$h,0)"
+	if ![catch "close $RFP"] { break }
+	puts "ds9 not yet ready..."
+	after 1000
+    }
+    #exec echo "image;box($x,$y,$w,$h,0)" | xpaset 'ds9*' regions &
+
+    if {$current == 0} { .decon.b.prev configure -state disabled
+		} else { .decon.b.prev configure -state normal	}
+    if {$current == $maxcur} { .decon.b.next configure -state disabled
+		      } else { .decon.b.next configure -state normal	}
+}
+
+proc ChangeBgBox {} {
+    global Extension BGfileList current BgBox Naxis3
+
+    set f [lindex $BGfileList $current]
+    set img "$f${Extension}"
+    if [file exists "${img}_mean"] { append img "_mean"}
+    set r [exec xpaget 'ds9*' regions]
+    regexp {box\(([0-9.]+),([0-9.]+),([0-9.]+),([0-9.]+)} $r match x y w h
+    foreach v {x y BgBox(w) BgBox(h)} {
+	set $v [eval expr round($$v)]
+    }
+    set x [BgBox_Range $x $w [get_fitskey {NAXIS1  } $img]]
+    set y [BgBox_Range $y $h [get_fitskey {NAXIS2  } $img]]
+    set BgBox($f) "$w x $h @ $x , $y"
+    exec xpaset -p "ds9*" regions deleteall
+    exec echo "image;box($x,$y,$w,$h,0)" | xpaset "ds9*" regions &
+}
+
+proc Define_Subframes {} {    # uses toplevel .decon
+    global Extension ObjList RefList OskyList RskyList ObjName Naxis3
+    global BGfileList BgBox current maxcur NextStep
+
+    set BgBox(w) "100"	;# 16 for MIDI-TTau
+    set BgBox(h) "100"
+    frame .decon.sz -relief ridge -bd 2
+    label .decon.sz.l -text "Box excluded from background fitting - default size" -anchor w
+    label .decon.sz.wl -text "Width:"
+    entry .decon.sz.we -textvar BgBox(w) -width 4
+    bind  .decon.sz.we <Return> BgBox_ChangeSize
+    label .decon.sz.hl -text "  Height:"
+    entry .decon.sz.he -textvar BgBox(h) -width 4
+    bind  .decon.sz.he <Return> BgBox_ChangeSize
+    pack .decon.sz.l  -side top  -padx 1m -fill x -expand y
+    pack .decon.sz.wl -side left -padx 1m
+    pack .decon.sz.we -side left -pady 5  -fill x -expand y
+    pack .decon.sz.hl -side left
+    pack .decon.sz.he -side left -padx 1m -fill x -expand y
+    pack .decon.sz -padx 1 -pady 1 -fill x -expand y
+
+    frame .decon.r -relief ridge -bd 2
+
+    set current 0
+    set i 0
+    set BGfileList [concat $ObjList $RefList]
+    set maxcur [llength $BGfileList]; incr maxcur -1
+    foreach f $BGfileList {
+	#puts "#$i - $f"
+	set full "$f${Extension}"
+	if {$Naxis3($f) > 1} {
+	    append full "_mean"
+	    if ![file exists $full] {
+		# this should be a full-blown message-window...
+		puts "$full does not exists, trying to create it"
+		exec fitsmean -nosigma -o $full "$f${Extension}"
+	    }
+	}
+	set x 64; set y 64
+	regexp {([0-9]+) +([0-9]+)} [exec findcenter $full] match x y
+	incr x; incr y
+	set x [BgBox_Range $x $BgBox(w) [get_fitskey {NAXIS1  } $full]]
+	set y [BgBox_Range $y $BgBox(h) [get_fitskey {NAXIS2  } $full]]
+	set BgBox($f) "$BgBox(w) x $BgBox(h) @ $x , $y"
+	radiobutton .decon.r.b$i -variable current -anchor w -value $i\
+		-text "$f ($ObjName($f))" -command BgBox_Display
+	label .decon.r.l$i -textvar BgBox($f)
+	grid .decon.r.b$i .decon.r.l$i -sticky we -pady 1 -padx 2
+	incr i
+    }
+
+    frame .decon.b -relief ridge -bd 0
+    button .decon.b.prev -text "Prev" -command { if {$current > 0} {incr current -1; BgBox_Display} }
+    button .decon.b.corr -text "Change Box" -pady 0 -command ChangeBgBox
+    button .decon.b.next -text "Next" -command { if {$current < $maxcur} {incr current; BgBox_Display} }
+    button .decon.b.quit -text "Done" -command {
+	set NextStep 3
+    }
+    pack .decon.b.prev .decon.b.corr .decon.b.next .decon.b.quit\
+	    -side left -padx 1m -pady 3 -ipady 0 -fill both -expand y
+    pack .decon.b -ipadx 4 -ipady 2 -padx 1 -pady 1 -fill x -expand y -side bottom
+
+    # this way, the file list is truncated if the screen is too small
+    pack .decon.r -ipadx 4 -ipady 2 -padx 1 -pady 1 -fill x -expand y
+
+    BgBox_Display
+    tkwait variable NextStep
+    destroy .decon.sz .decon.r .decon.b
+    update
+}
+
+#############################################################################
+#####				Deconvolution				#####
+#############################################################################
+
+proc Write_FFTline {FP f bgbox {subst_dir ""}} {
+    global Defaults Extension Naxis1 Naxis2 BgBox
+
+    set src "$f$Extension"
+    #if {$subst_dir == "star"}	 { regsub {^ref}  $src "obj"  src ;# ref.star in obj dir }\
+    #elseif {$subst_dir == "sky"} { regsub {^rsky} $src "osky" src ;# ref.sky in osky dir }
+
+    if {$bgbox != ""} {
+	# the _pwr_mean is only needed if one makes the vis before the phases
+	puts $FP "${f}_pwr_mean: $src Makefile"
+	puts $FP "	\$(MAKE) ${f}_pwr\n"
+	puts $FP "${f}_pwr: $src Makefile"
+    } else {
+	puts $FP "${f}_pwr_mean: $src Makefile"
+    }
+    puts $FP "	$Defaults(prespeckle)\\"
+    puts $FP "		\"read $src\"\\"
+    puts $FP "		\"bitpix -32\"\\"
+
+    set x [expr round($Naxis1($f)/2.)];	 set w $BgBox(w)
+    set y [expr round($Naxis2($f)/2.)];	 set h $BgBox(h)
+    if {$bgbox != ""} {
+	regexp {([0-9]+) *x *([0-9]+) *@ *([0-9]+) *, *([0-9]+)} $bgbox match w h x y
+    }
+    #puts "--- $w x $h @ $x , $y ---"
+    set x1 [expr round($x - $w/2.)];	set x2 [expr round($x + $w/2.)];
+    set y1 [expr round($y - $h/2.)];	set y2 [expr round($y + $h/2.)];
+
+    if {$bgbox != ""} {
+	# something with a star in it
+	puts $FP "		\"background $x1 $y1 $x2 $y2\"\\"
+	puts $FP "		\"extract    $x1 $y1 $x2 $y2\"\\"
+	puts $FP "		\"FFT pwr=${f}_pwr pwrav=${f}_pwr_mean pwrsq=${f}_pwr_sum2 pha=${f}_pha phaav=${f}_pha_mean expav=${f}_expa_mean\"\\"
+    } else {
+	# only sky
+	puts $FP "		\"background\"\\"
+	puts $FP "		\"extract    $x1 $y1 $x2 $y2\"\\"
+	puts $FP "		\"FFT nocent pwrav=${f}_pwr_mean pwrsq=${f}_pwr_sum2\"\\"
+    }
+    puts $FP "		exit\n"
+}
+
+proc Deconvolution {} {
+    global OPT Defaults Groupfile Extension ObjList RefList OskyList RskyList
+    global Naxis1 Naxis2 Naxis3 ObjName
+    global NextStep BgBox Ass_Sky Ass_Ref avboxcnt
+
+    #
+    # Step 0: Do we have Reference-cubes?
+    #
+    if {$RefList == ""} {
+	if [tk_dialog .ask "No Reference?"\
+		"You have no data cubes of a reference star.\nI assume it is contained in the object data."\
+		questhead 0 "Go ahead" "Don't do that!"] {
+	    # return - do nothing and see what happens
+	} else {
+	    file mkdir "ref" "rsky"; # doesn't hurt, even if they exist
+	    foreach f $ObjList  {
+		regsub {^obj}  $f "ref"  r; lappend RefList  $r; set Ass_Ref($f) $r
+		set ObjName($r) $ObjName($f)
+		set Naxis1($r) $Naxis1($f)
+		set Naxis2($r) $Naxis2($f)
+		set Naxis3($r) $Naxis3($f)
+		exec ln -s "../$f$Extension"	$r$Extension
+		exec ln -s "../$f${Extension}_mean" $r${Extension}_mean
+	    }
+	    foreach f $OskyList {
+		regsub {^osky} $f "rsky" r; lappend RskyList $r
+		set ObjName($r) $ObjName($f)
+		set Naxis1($r) $Naxis1($f)
+		set Naxis2($r) $Naxis2($f)
+		set Naxis3($r) $Naxis3($f)
+		exec ln -s "../$f$Extension"	$r$Extension
+		exec ln -s "../$f${Extension}_mean" $r${Extension}_mean
+	    }
+	}
+    }
+    toplevel .decon
+    wm title .decon "Deconvolution: Step 1 - Edit Assigns"
+    #
+    # Step 1: Assignments
+    #
+    set NextStep 1
+    frame .decon.bf -bd 0
+    button .decon.bf.nxt -width 10 -text "Next Step: Background"\
+	    -command { set NextStep 2 }
+    button .decon.bf.cnc -width 10 -text "Abort"\
+	    -command { destroy .decon; return }
+    pack .decon.bf.nxt .decon.bf.cnc -side left -padx 8m -pady 2m -fill x -expand y
+    pack .decon.bf -side bottom -fill x
+
+    frame .decon.f -bd 0
+    Assign_same_sky
+    Edit_Assigns .decon.f
+    tkwait variable NextStep
+    Write_Groupfile $Groupfile
+    #
+    # Step 2: Background-Boxes
+    #
+    wm title .decon "Deconvolution: Step 2 - Background Subtraction"
+    destroy .decon.f .decon.bf
+    update
+
+    Define_Subframes
+    #
+    # Start Writing the Makefile
+    #
+    Read_SpeckleDefaults
+    set FP [open "Makefile" "w"]
+        puts $FP "#!/bin/sh\n#\n# Makefile for deconvolution"
+    puts $FP "# Created on [clock format [clock seconds]]"
+    puts $FP "#\\\nexec $OPT(gmake) -kf \$0\n"
+    puts -nonewline $FP "science: BEGIN"
+    #
+    # print all target-filename
+    #
+    foreach f $RefList { puts -nonewline $FP "\\\n    ${f}_phasflg" }
+    puts $FP ""
+    if [file exists "$OPT(Speckledir)/Sounds/deconv_done.wav"] {
+	puts $FP "	-esdplay $OPT(Speckledir)/Sounds/deconv_done.wav"
+    }
+    puts $FP "	@(echo -n \"Deconvolution  done   on \"; date) >> speckle.logbook"
+    puts $FP "	date"
+
+    puts $FP "\nBEGIN:\n\t@(echo -n \"Deconvolution started on \"; date) >> speckle.logbook"
+    puts $FP "\n% : %.gz\n	gunzip $<\n"
+    puts $FP "obj:\n	@mkdir obj\n"
+    puts $FP "osky:\n	@mkdir osky\n"
+    puts $FP "ref:\n	@mkdir ref\n"
+    puts $FP "rsky:\n	@mkdir rsky\n"
+
+    puts $FP "################################# Objects #################################\n"
+    foreach f $ObjList  { Write_FFTline $FP $f $BgBox($f) }
+
+    puts $FP "################################ References ###############################\n"
+    foreach f $RefList  { Write_FFTline $FP $f $BgBox($f) "star" }
+
+    puts $FP "############################### Object-Skies ##############################\n"
+    foreach f $OskyList { Write_FFTline $FP $f "" }
+
+    puts $FP "############################## Reference-Skies ############################\n"
+    foreach f $RskyList { Write_FFTline $FP $f "" "sky" }
+
+    puts $FP "################################## Phases #################################"
+    # outer loop over references:
+    # there might be several objects per ref, but only one ref per object
+    foreach r $RefList {
+	# now loop over objects: if one uses the current ref,
+	# FFT, compute phases and delete cubes (visibility doesn't need cubes)
+
+	foreach o $ObjList {
+	    if { $Ass_Ref($o) == $r } {
+		puts $FP "\n${r}_phasflg: ${o}_ktph ${o}_biph"
+
+		puts $FP "\n\n${o}_ktph: ${o}$Extension ${r}$Extension Makefile"
+		puts $FP "	\$(MAKE) ${o}_pwr ${r}_pwr"
+		puts $FP "	despeckle $Defaults(KT-opts)   -obj $o -ref $r -ktp ${o}_ktph -kts ${o}_dktph"
+		puts $FP "	despeckle $Defaults(Bisp-opts) -obj $o -ref $r -bip ${o}_biph -bis ${o}_dbiph"
+		puts $FP "	-\\rm ${o}_pwr ${o}_pha"
+
+		puts $FP "\n${o}_biph: ${o}_ktph"
+	    }
+	}
+	puts $FP "\n${r}_phasflg:"
+	puts $FP "	-\\rm ${r}_pwr ${r}_pha"
+	puts $FP "	touch ${r}_phasflg\n"
+    }
+    puts $FP "############################### Visibilities ##############################"
+
+    foreach o $ObjList {
+	set os $Ass_Sky($o)
+	set r  $Ass_Ref($o)
+	set rs $Ass_Sky($r)
+	puts $FP "\n${o}_visi: Makefile ${o}_pwr_mean ${os}_pwr_mean ${r}_pwr_mean ${rs}_pwr_mean"
+	puts $FP "	quickvis -obj ${o}_pwr -osky ${os}_pwr -ref ${r}_pwr -rsky ${rs}_pwr -o ${o}_visi -s ${o}_dvis"
+    }
+    puts $FP ""
+    #
+    # Average Visibility & Phase
+    #
+    wm title .decon "Deconvolution: Step 3 - Average and create Hardcopy"
+    set avboxcnt 0
+    frame .decon.b -bd 0
+    button .decon.b.add  -width 8 -text "Add Av."   -command "Add_Average $FP"
+    button .decon.b.go   -width 8 -text "Go!"       -command { set NextStep 4 }
+    button .decon.b.bg   -width 8 -text "Run in Bg" -command { set NextStep 5 }
+    button .decon.b.ajob -width 8 -text "Queue"     -command { set NextStep 6 }
+    button .decon.b.quit -width 8 -text "Done"      -command { set NextStep 0 }
+    pack .decon.b.add .decon.b.go .decon.b.bg .decon.b.ajob .decon.b.quit\
+	    -side left -padx 1m -pady 5 -fill both -expand y
+
+    pack .decon.b -side bottom -padx 1 -pady 1 -fill x -expand y
+
+    puts $FP "%_visi.ps: %_visi"
+    puts $FP "	fits2pnm $Defaults(viscuts) \$< | pnmtops > \$@\n"
+    puts $FP "%_tvis.ps: %_tvis"
+    puts $FP "	fits2pnm $Defaults(viscuts) \$< | pnmtops > \$@\n"
+    puts $FP "%_ktph.ps: %_ktph"
+    puts $FP "	fits2pnm $Defaults(phacuts) \$< | pnmtops > \$@\n"
+    puts $FP "%_biph.ps: %_biph"
+    puts $FP "	fits2pnm $Defaults(phacuts) \$< | pnmtops > \$@\n"
+
+    tkwait variable NextStep
+
+    puts $FP "# End of Makefile"
+    close $FP
+    exec chmod u+rx "Makefile"
+    destroy .decon
+    if {$NextStep > 0} {
+	if {$NextStep == 5} {
+	    exec ./Makefile >& Deconvol.log &
+	    exit
+	} elseif {$NextStep == 6} {
+	    exec echo "./Makefile >& Deconvol.log" | add_job
+	    exit
+	}
+	wm iconify .; catch "exec ./Makefile |& tee Deconvol.log >& /dev/tty"; wm deiconify .
+	Check_Results
+    }
+}
+
+#############################################################################
+#####			Extract Subframes w/o Decon			#####
+#############################################################################
+
+proc Subframes {} {
+    global OPT Extension Defaults BGfileList BgBox Naxis1 Naxis2 Ass_Sky
+
+    toplevel .decon
+    wm title .decon "Extract Subframes"
+
+    Define_Subframes
+    destroy .decon
+    update
+    #
+    # Start Writing the Makefile
+    #
+    Read_SpeckleDefaults
+    set FP [open "Subframes.make" "w"]
+        puts $FP "#!/bin/sh\n#\n# Makefile for extraction of subframes"
+    puts $FP "# Created on [clock format [clock seconds]]"
+    puts $FP "#\\\nexec $OPT(gmake) -kf \$0\n"
+    puts -nonewline $FP "science: BEGIN"
+    #
+    # print all target-filename (i.e. objects and references, and their skies)
+    #
+    foreach f $BGfileList {
+	puts -nonewline $FP "\\\n    ${f}_subf"
+	puts -nonewline $FP "\\\n    $Ass_Sky($f)_subf"
+    }
+    puts $FP ""
+    puts $FP "	@(echo -n \"Subframes extracted on \"; date) >> speckle.logbook"
+    puts $FP "	date"
+
+    puts $FP "\nBEGIN:\n\t@(echo -n \"Begin extraction subframes on \"; date) >> speckle.logbook"
+    puts $FP "\n% : %.gz\n	gunzip $<\n"
+    puts $FP "obj:\n	@mkdir obj\n"
+    puts $FP "ref:\n	@mkdir ref\n"
+
+    foreach f $BGfileList {
+	set src "$f$Extension"
+
+	set x [expr round($Naxis1($f)/2.)];	 set w $BgBox(w)
+	set y [expr round($Naxis2($f)/2.)];	 set h $BgBox(h)
+	regexp {([0-9]+) *x *([0-9]+) *@ *([0-9]+) *, *([0-9]+)} $BgBox($f) match w h x y
+	set x1 [expr round($x - $w/2.)];	set x2 [expr round($x + $w/2.)];
+	set y1 [expr round($y - $h/2.)];	set y2 [expr round($y + $h/2.)];
+
+	puts $FP "${f}_subf: $src Subframes.make"
+	puts $FP "	$Defaults(prespeckle)\\"
+	puts $FP "		\"read $src\"\\"
+	puts $FP "		\"bitpix -32\"\\"
+	puts $FP "		\"extract $x1 $y1 $x2 $y2\"\\"
+	puts $FP "		\"write   ${f}_subf\"\\"
+	puts $FP "		exit\n"
+
+	set sky $Ass_Sky($f)
+	set src "$sky$Extension"
+
+	puts $FP "${sky}_subf: $src Subframes.make"
+	puts $FP "	$Defaults(prespeckle)\\"
+	puts $FP "		\"read $src\"\\"
+	puts $FP "		\"bitpix -32\"\\"
+	puts $FP "		\"extract $x1 $y1 $x2 $y2\"\\"
+	puts $FP "		\"write   ${sky}_subf\"\\"
+	puts $FP "		exit\n"
+    }
+    puts $FP "# End of Subframes.make"
+    close $FP
+    exec chmod u+rx "Subframes.make"
+    wm iconify .; catch "exec ./Subframes.make |& tee Subframes.log >& /dev/tty"; wm deiconify .
+}
+
+#############################################################################
+#####			Extract Sky Subframes	 			#####
+#############################################################################
+#
+# TODO: Do something with the results - e.g. add to internal BGfileList
+#
+
+proc SkySubframes {} {
+    global OPT Extension Defaults BGfileList BgBox Naxis1 Naxis2 Ass_Sky
+
+    toplevel .decon
+    wm title .decon "Extract Sky Subframes"
+
+    Define_Subframes
+    destroy .decon
+    update
+    #
+    # Start Writing the Makefile
+    #
+    Read_SpeckleDefaults
+    set FP [open "SkySubframes.make" "w"]
+        puts $FP "#!/bin/sh\n#\n# Makefile for extraction of sky subframes"
+    puts $FP "# Created on [clock format [clock seconds]]"
+    puts $FP "#\\\nexec $OPT(gmake) -kf \$0\n"
+    puts -nonewline $FP "science: BEGIN"
+    #
+    # print all target-filename (i.e. objects, references, and their skies, if any)
+    #
+    foreach f $BGfileList {
+	# regsub copies string unchanged if regex does not match
+	regsub {^obj} $f "osky" dst
+	regsub {^ref} $dst "rsky" dst
+	puts -nonewline $FP "\\\n    ${dst}_subf"	;# change extension name?
+    }
+    puts $FP ""
+    puts $FP "	@(echo -n \"Sky Subframes extracted on \"; date) >> speckle.logbook"
+    puts $FP "	date"
+
+    puts $FP "\nBEGIN:\n\t@(echo -n \"Begin extraction sky subframes on \"; date) >> speckle.logbook"
+    puts $FP "\n% : %.gz\n	gunzip $<\n"
+    puts $FP "osky:\n	@mkdir osky\n"
+    puts $FP "rsky:\n	@mkdir rsky\n"
+
+    foreach f $BGfileList {
+	set src "$f$Extension"
+	set dir ""
+	if [regsub {^obj} $f   "osky" dst] { set dir "osky" }
+	if [regsub {^ref} $dst "rsky" dst] { set dir "rsky" }
+
+	set x [expr round($Naxis1($f)/2.)];	 set w $BgBox(w)
+	set y [expr round($Naxis2($f)/2.)];	 set h $BgBox(h)
+	regexp {([0-9]+) *x *([0-9]+) *@ *([0-9]+) *, *([0-9]+)} $BgBox($f) match w h x y
+	set x1 [expr round($x - $w/2.)];	set x2 [expr round($x + $w/2.)];
+	set y1 [expr round($y - $h/2.)];	set y2 [expr round($y + $h/2.)];
+
+	puts $FP "${dst}_subf: $src $dir SkySubframes.make"
+	puts $FP "	$Defaults(prespeckle)\\"
+	puts $FP "		\"read $src\"\\"
+	puts $FP "		\"bitpix -32\"\\"
+	puts $FP "		\"extract $x1 $y1 $x2 $y2\"\\"
+	puts $FP "		\"write   ${dst}_subf\"\\"
+	puts $FP "		exit\n"
+
+	# should we do something with the assigned sky file??
+    }
+    puts $FP "# End of SkySubframes.make"
+    close $FP
+    exec chmod u+rx "SkySubframes.make"
+    wm iconify .; catch "exec ./SkySubframes.make |& tee SkySubframes.log >& /dev/tty"; wm deiconify .
+}
+
+#############################################################################
+#####			Extract Reference Subframes 			#####
+#############################################################################
+#
+# TODO: change assigns to same sky number (so that skies are in the right order)
+#       create assigns for references and refskies
+#
+proc RefSubframes {} {
+    global OPT Extension Defaults ObjName ObjList RefList RskyList
+    global Ass_Sky BgBox Naxis1 Naxis2 Naxis3
+
+    toplevel .decon
+    wm title .decon "Extract Subframes with Reference"
+
+    Define_Subframes
+    destroy .decon
+    update
+    #
+    # Start Writing the Makefile
+    #
+    Read_SpeckleDefaults
+    set FP [open "RefSubframes.make" "w"]
+        puts $FP "#!/bin/sh\n#\n# Makefile for extraction of subframes with reference"
+    puts $FP "# Created on [clock format [clock seconds]]"
+    puts $FP "#\\\nexec $OPT(gmake) -kf \$0\n"
+    puts -nonewline $FP "science: BEGIN"
+    #
+    # print all target-filename (i.e. objects moved to ref-subdir, and skies)
+    #
+    foreach f $ObjList {
+	regsub {^obj} $f "ref" dst
+	regsub {^osky} $Ass_Sky($f) "rsky" dsky
+	puts -nonewline $FP "\\\n    ${dst}_extr"
+	puts -nonewline $FP "\\\n    ${dsky}_extr"
+    }
+    puts $FP ""
+    puts $FP "	@(echo -n \"Reference Subframes extracted on \"; date) >> speckle.logbook"
+    puts $FP "	date"
+
+    puts $FP "\nBEGIN:\n\t@(echo -n \"Begin extraction reference subframes on \"; date) >> speckle.logbook"
+    puts $FP "\n% : %.gz\n	gunzip $<\n"
+    puts $FP "ref:\n	@mkdir ref\n"
+    puts $FP "rsky:\n	@mkdir rsky\n"
+
+    foreach f $ObjList {
+	set src "$f$Extension"
+	regsub {^obj} $f "ref" dst
+	lappend RefList $dst
+
+	set x [expr round($Naxis1($f)/2.)];	 set w $BgBox(w)
+	set y [expr round($Naxis2($f)/2.)];	 set h $BgBox(h)
+	regexp {([0-9]+) *x *([0-9]+) *@ *([0-9]+) *, *([0-9]+)} $BgBox($f) match w h x y
+	set x1 [expr round($x - $w/2.)];	set x2 [expr round($x + $w/2.)];
+	set y1 [expr round($y - $h/2.)];	set y2 [expr round($y + $h/2.)];
+
+	set ObjName($dst) $ObjName($f)
+	set Naxis1($dst) $w
+	set Naxis2($dst) $h
+	set Naxis3($dst) $Naxis3($f)
+
+	puts $FP "${dst}_extr: $src ref RefSubframes.make"
+	puts $FP "	$Defaults(prespeckle)\\"
+	puts $FP "		\"read $src\"\\"
+	puts $FP "		\"bitpix -32\"\\"
+	puts $FP "		\"extract    $x1 $y1 $x2 $y2\"\\"
+	puts $FP "		\"write      ${dst}_extr\"\\"
+	puts $FP "		exit\n"
+
+	set sky $Ass_Sky($f)
+	set src "$sky$Extension"
+	regsub {^osky} $sky "rsky" dsky
+	lappend RskyList $dsky
+	set ObjName($dsky) $ObjName($sky)
+	set Naxis1($dsky) $w
+	set Naxis2($dsky) $h
+	set Naxis3($dsky) $Naxis3($sky)
+
+	puts $FP "${dsky}_extr: $src rsky RefSubframes.make"
+	puts $FP "	$Defaults(prespeckle)\\"
+	puts $FP "		\"read $src\"\\"
+	puts $FP "		\"bitpix -32\"\\"
+	puts $FP "		\"extract    $x1 $y1 $x2 $y2\"\\"
+	puts $FP "		\"write      ${dsky}_extr\"\\"
+	puts $FP "		exit\n"
+    }
+    puts $FP "# End of RefSubframes.make"
+    close $FP
+    set Extension "_extr"
+    Write_Groupfile "Holo.grp"
+
+    exec chmod u+rx "RefSubframes.make"
+    wm iconify .; catch "exec ./RefSubframes.make |& tee RefSubframes.log >& /dev/tty"; wm deiconify .
+}
+
+#############################################################################
+#####			Average and Hardcopy				#####
+#############################################################################
+
+proc check_named_object {name} {
+    global ObjList OskyList RefList RskyList ObjName Avselect
+
+    foreach f [concat $ObjList $OskyList $RefList $RskyList] {
+	if {$name == $ObjName($f)} { set Avselect($f) $Avselect($name) }
+    }
+}
+
+proc Average_Listframe {w label list} {
+    global Avselect ObjName namecnt
+
+    frame $w -relief ridge -bd 2
+    frame $w.f
+    label $w.l -text $label -anchor w
+    button $w.all  -text "All"  -pady 0 -command "foreach f \"$list\" {set Avselect(\$f) 1}"
+    button $w.none -text "None" -pady 0 -command "foreach f \"$list\" {set Avselect(\$f) 0}"
+    pack $w.l		-in $w.f -side left -fill x -padx 1m -pady 1m
+    pack $w.none $w.all -in $w.f -side right -padx 1m -pady 0
+    pack $w.f -fill x -expand y
+
+    set cnt 0
+    foreach f $list {
+	set Avselect($f) "1"
+	checkbutton $w.c$cnt -text "$f: $ObjName($f)" -anchor w -variable Avselect($f)
+	pack $w.c$cnt -fill x -expand y -padx 1m
+	incr cnt
+
+	set n $ObjName($f)
+	if ![info exists Avselect($n)] {
+	    set Avselect($n) "1"
+	    checkbutton .avs.name.c$namecnt -text "$n" -anchor w -variable Avselect($n)\
+		    -command "check_named_object $n"
+	    pack .avs.name.c$namecnt -fill x -expand y -padx 1m
+	    incr namecnt
+	}
+    }
+}
+
+proc Add_Average {FP} {
+    global Extension ObjList OskyList RefList RskyList ObjName
+    global Avselect namecnt rootname headline
+
+    if [winfo exists .avs] { wm deiconify .avs; return }
+    toplevel .avs
+    wm title .avs "Select Datasets to use for average"
+
+    catch {unset Avselect}
+    set namecnt 0
+    Average_Listframe .avs.name "Objects:" ""
+    Average_Listframe .avs.obj  "Object datasets:"	$ObjList
+    Average_Listframe .avs.osky "Object-sky datasets:"	$OskyList
+    Average_Listframe .avs.ref  "Reference datasets:"	$RefList
+    Average_Listframe .avs.rsky "Refer-sky datasets:"	$RskyList
+
+    frame .avs.f -relief ridge -bd 2
+    set rootname "all"
+    label .avs.lf -text "Root of filenames for average:\n(will add .fits_tvis etc.)"\
+	    -justify left -anchor e
+    entry .avs.ef -textvar rootname -width 22
+
+    set headline [make_headline "[lindex $ObjList 0]${Extension}"]
+    label .avs.lh -text "Headline (TeX-notation)" -justify left -anchor e
+    entry .avs.eh -textvar headline -width 22
+
+    grid .avs.lf .avs.ef -in .avs.f -padx 2m -pady 5 -sticky we
+    grid .avs.lh .avs.eh -in .avs.f -padx 2m -pady 5 -sticky we
+    grid columnconfigure .avs.f 1 -weight 1
+
+    frame .avs.b -relief flat
+    button .avs.ok  -text "  Ok  " -command "Write_AvgCmds $FP; destroy .avs"
+    button .avs.cnc -text "Cancel" -command { destroy .avs }
+    pack .avs.ok .avs.cnc -in .avs.b -side left\
+	    -padx 2m -pady 2m -ipadx 20m -ipady .5m -expand 1
+
+    # dirty trick to make sure the buttons do not vanish if the screen is too small...
+    grid .avs.b   -	    -sticky ew
+    grid .avs.name x	    -sticky news
+    grid .avs.obj .avs.osky -sticky news
+    grid .avs.ref .avs.rsky -sticky news
+    grid .avs.f   -	    -sticky ew
+}
+
+
+proc Add_to_quickvis {FP List} {
+    global Avselect
+
+    set str ""
+    foreach f $List {
+	if {$Avselect($f)} {
+	    puts -nonewline $FP "${f}_pwr_mean "; append str "${f}_pwr "
+	}
+    }
+    return $str
+}
+
+proc Write_fitsmean_cmd {FP sext mext sigma} {
+    global ObjList Avselect rootname
+
+    set depstr ""
+    foreach f $ObjList { if {$Avselect($f)} { append depstr "$f$sext " }}
+    puts $FP "${rootname}.fits$mext: $depstr"
+    puts $FP "	fitsmean -o ${rootname}.fits$mext $sigma $depstr\n"
+}
+
+
+proc Write_AvgCmds {FP} {
+    global Defaults Extension ObjList OskyList RefList RskyList ObjName
+    global Avselect rootname headline avboxcnt
+
+    regsub {\.fits$} $rootname "" rootname
+    if [winfo exists .decon] {
+	set w .decon.a$avboxcnt; incr avboxcnt
+	frame $w -relief ridge -bd 2
+	label $w.l -text "\"$headline\", File: $rootname.fits..." -anchor w
+	pack $w.l -padx 1m -pady 5 -fill x -expand y
+	pack $w   -padx 1 -pady 1 -fill x -expand y
+    }
+    puts $FP "######################### Average & Hardcopy #########################\n"
+    #
+    # Total Visibility
+    #
+    puts -nonewline $FP "${rootname}.fits_tvis: Makefile "
+    set cmdline	   "-obj [Add_to_quickvis  $FP $ObjList]"
+    append cmdline "-osky [Add_to_quickvis $FP $OskyList]"
+    append cmdline "-ref [Add_to_quickvis  $FP $RefList]"
+    append cmdline "-rsky [Add_to_quickvis $FP $RskyList]"
+    puts $FP ""
+    puts $FP "	quickvis $cmdline -o ${rootname}.fits_tvis -s ${rootname}.fits_dtvis\n"
+    #
+    # Normal means
+    #
+    Write_fitsmean_cmd $FP "_visi"  "_visi" "-s ${rootname}.fits_dvis"
+    Write_fitsmean_cmd $FP "_dvis"  "_evis" "-delta"
+    Write_fitsmean_cmd $FP "_ktph"  "_ktph" "-s ${rootname}.fits_dktph"
+    Write_fitsmean_cmd $FP "_dktph" "_ektp" "-delta -smooth"
+    Write_fitsmean_cmd $FP "_biph"  "_biph" "-s ${rootname}.fits_dbiph"
+    Write_fitsmean_cmd $FP "_dbiph" "_ebip" "-delta -smooth"
+    #
+    puts $FP "science:	$rootname.ps\n"
+    puts $FP "$rootname.ps: $rootname.tex\\"
+
+    set TFP [open "$rootname.tex" "w"]
+
+    puts $TFP "\\input psfig.sty\\advance\\vsize by-9truemm\\voffset=10truemm\\nopagenumbers"
+    puts $TFP "\\headline={\\centerline{\\bf $headline}}"
+    puts $TFP "\\footline={\\centerline{[clock format [clock seconds]]}}"
+    puts $TFP "\\def\\figbox#1#2{\\vbox{%"
+    puts $TFP "  \\hbox to.33\\hsize{\\hss #1\\hss}\\medskip%"
+    puts $TFP "  \\psfig{figure=#2.ps,width=0.33\\hsize}}}"
+    puts $TFP "\\catcode`\\_=12"
+
+    foreach f $ObjList {
+	if {$Avselect($f)} {
+	    puts $TFP "%%\n\\vfill\\vbox{\\centerline{$f}\\medskip\\line{%%"
+
+	    puts $TFP "\\figbox{Visibility}{${f}_visi}\\hss"
+	    puts $TFP "\\figbox{KT-Phase}{${f}_ktph}\\hss"
+	    puts $TFP "\\figbox{Bispectrum-Phase}{${f}_biph}}}"
+
+	    puts $FP "    ${f}_visi.ps ${f}_ktph.ps ${f}_biph.ps\\"
+	}
+    }
+    puts $TFP "%%\n\\vfill\\vbox{\\centerline{Average Frames}\\medskip\\line{%%"
+
+    set f "$rootname.fits"
+    puts $TFP "\\figbox{total Visibility}{${f}_tvis}\\hss"
+    puts $TFP "\\figbox{KT-Phase}{${f}_ktph}\\hss"
+    puts $TFP "\\figbox{Bispectrum-Phase}{${f}_biph}}}"
+
+    puts $TFP "\\vfill\\bye"
+    close $TFP
+
+    puts $FP "    ${f}_tvis.ps ${f}_visi.ps ${f}_ktph.ps ${f}_biph.ps"
+    puts $FP "	tex $rootname.tex"
+    puts $FP "	dvips $rootname.dvi"
+    puts $FP "	rm $rootname.log $rootname.dvi\n"
+}
+
+
+#############################################################################
+#####			(Manual) Average				#####
+#############################################################################
+
+proc Average {} {
+    global OPT Defaults
+
+    Read_SpeckleDefaults
+    set FP [open "Average.make" "w"]
+        puts $FP "#!/bin/sh\n#\n# Makefile for Average"
+    puts $FP "# Created on [clock format [clock seconds]]"
+    puts $FP "#\\\nexec $OPT(gmake) -kf \$0\n"
+    puts $FP "science: BEGIN\n"
+    puts $FP "BEGIN:\n\t@(echo -n \"Average started on \"; date) >> speckle.logbook"
+    puts $FP "\n% : %.gz\n	gunzip $<\n"
+
+    puts $FP "%_visi.ps: %_visi"
+    puts $FP "	fits2pnm $Defaults(viscuts) \$< | pnmtops > \$@\n"
+    puts $FP "%_tvis.ps: %_tvis"
+    puts $FP "	fits2pnm $Defaults(viscuts) \$< | pnmtops > \$@\n"
+    puts $FP "%_ktph.ps: %_ktph"
+    puts $FP "	fits2pnm $Defaults(phacuts) \$< | pnmtops > \$@\n"
+    puts $FP "%_biph.ps: %_biph"
+    puts $FP "	fits2pnm $Defaults(phacuts) \$< | pnmtops > \$@\n"
+
+    Add_Average $FP
+    tkwait window .avs
+    close $FP
+}
+
+
+#############################################################################
+#####			Check Results					#####
+#############################################################################
+
+proc Check_Results {} {
+    if [catch {set lst [glob "*.tex"]}] { return }
+    foreach f $lst {
+	set f [file rootname $f]
+	if {[file exists "$f.ps"] || [file exists "$f.ps.gz"]} {
+	    button .f.res -text "Results" -command InspectResults
+	    pack .f.res -side top -padx 1m -pady 3 -fill x -expand y
+	    return
+	}
+    }
+}
+
+proc InspectResults {} {
+    global OPT Defaults
+
+    destroy .res
+    toplevel .res
+    wm title .res "Inspect Results"
+
+    Read_SpeckleDefaults; # for Defaults(maxbrightopts)
+
+    set cnt 0
+    foreach f [glob "*.tex"] {
+	set f [file rootname $f]
+	if {([file exists "$f.ps"] || [file exists "$f.ps.gz"]) && [file exists "$f.fits_tvis"]} {
+	    frame .res.f$cnt -relief ridge -bd 2
+	    label .res.f$cnt.l -text "$f.*"
+
+	    menubutton .res.f$cnt.d -text "Display..." -menu .res.f$cnt.d.m \
+		    -relief raised -bd 1 -anchor c -direction flush
+	    menu .res.f$cnt.d.m
+	    .res.f$cnt.d.m add command -label "$f.ps" -command "exec $OPT(ghostview) $f.ps &"
+	    foreach i [list "$f.fits_tvis" "$f.fits_ktph" "$f.fits_biph"] {
+		.res.f$cnt.d.m add command -label $i -command "display $i"
+	    }
+	    button .res.f$cnt.mb -text "Call maxbright"\
+		    -command "exec maxbright -root $f.fits_ -titel \"[find_res_titel $f]\" $Defaults(maxbrightopts) &"
+	    button .res.f$cnt.bp -text "Call binplot"\
+		    -command "file mkdir \"Fits\"; exec sh -c {(cd Fits; binplot -V ../$f.fits_tvis -dv ../$f.fits_dtvis)} &"
+
+	    pack .res.f$cnt.l .res.f$cnt.d .res.f$cnt.mb .res.f$cnt.bp\
+		    -side left -padx 1m -pady 5 -fill x -expand 1
+	    pack .res.f$cnt   -padx 1 -pady 1 -fill x -expand y
+	    incr cnt
+	}
+    }
+    button .res.q -text "Dismiss" -command "destroy .res"
+    pack .res.q -padx 16m -pady 1m -fill x -expand y
+}
+
+proc find_res_titel {root} {
+    set titel "?"
+    set FP [open "$root.tex" "r"]
+    while {[gets $FP line] > 0} {
+	if [regexp {headline={\\centerline{\\bf (.+)}}} $line m titel] {
+	    break
+	}
+    }
+    close $FP
+    return "$titel"
+}
+
+#############################################################################
+#####			Select Datafiles first?				#####
+#############################################################################
+
+if { $argc <= 0 } {
+    #if ![file exists "Badpix.grp"]  - causes problems later
+    set Data_Selected 0
+    Select_Datafiles
+    tkwait variable Data_Selected
+    Read_Groupfile "Main.grp"
+} else {
+    Read_Groupfile [lindex $argv 0]
+}
+
+#############################################################################
+#####				Main Menu				#####
+#############################################################################
+
+frame .mf -relief raised -bd 2
+menubutton .mf.file -text "File" -menu .mf.file.m -anchor w -width 10
+menu .mf.file.m
+.mf.file.m add command -label "Read Groupfile" -command {
+    set fname [rkFileDialog .grpf "Select Group file" "." "*.grp"]
+    if {$fname != ""} { Read_Groupfile $fname }
+}
+.mf.file.m add command -label "Edit Assignments" -command { Edit_Assigns }
+.mf.file.m add command -label "View mean frames"\
+	-command { View_Frames .vfmean "Mean Frames" "_mean" }
+.mf.file.m add command -label "View shift&add frames"\
+	-command { View_Frames .vfsaam "Shift & Add Frames" "_saam" }
+.mf.file.m add command -label "Quit" -command exit
+
+pack .mf.file -side left -padx 4 -pady 0
+
+frame .f -bd 0
+button .f.seldata -text	"Select Datafiles" -command { Select_Datafiles }
+button .f.addbpix -text "Add Bad Pixels" -command { Add_Badpix }
+button .f.corbpix -text "Correct Bad Pixels" -command { Correct_BP_Cubes 0 }
+button .f.movies  -text "Show Movies"   -command { Show_Movies }
+button .f.deconv  -text "Deconvolution" -command { Deconvolution }
+button .f.subfram -text "Extract Subframes" -command { Subframes }
+button .f.skysubf -text "Extract Sky Subfrm" -command { SkySubframes }
+button .f.refsubf -text "Extract Ref.Subfrm" -command { RefSubframes }
+button .f.average -text "Average" -command { Average }
+
+pack .f.seldata .f.addbpix .f.corbpix .f.movies .f.deconv .f.subfram .f.skysubf .f.refsubf .f.average\
+	-side top -padx 1m -pady 3 -fill x -expand y
+pack .mf .f -side top -padx 0 -pady 0 -fill both -expand y
+
+Check_Results
+
+bind . <Control-c> { exit }
+
+#############################################################################
+
+#CenterToplevel .

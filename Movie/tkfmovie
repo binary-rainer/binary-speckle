@@ -1,0 +1,1023 @@
+#!@@PATH_TO_MOVISH@@/movish
+# -*- Mode: tcl -*-
+#
+# tkfmovie
+# Created:     Thu May  7 10:50:22 1998 by Koehler@hex
+# Last Change: Wed Oct  7 14:44:09 2009
+#
+#############################################################################
+
+if {[info exists env(TCL_RK_LIBRARY)] && [file isdir $env(TCL_RK_LIBRARY)]} {
+    # all right
+} elseif [file isdir "@@PATH_TO_TCL_RK@@"] {
+    set env(TCL_RK_LIBRARY) "@@PATH_TO_TCL_RK@@"
+} elseif [file isdir "./tcl-rk"] {
+    set env(TCL_RK_LIBRARY) "[pwd]/tcl-rk"
+} else {
+    puts "No Tcl-RK library found!"
+}
+
+lappend auto_path $env(TCL_RK_LIBRARY)
+rkInit
+
+if { [winfo screenwidth .] < 1280 } {
+    option add *Scrollbar.width		12
+}
+
+#############################################################################
+#
+# Defaults:
+#
+set OPT(Debug)  0
+set OPT(imgwd)	260
+set OPT(imght)	270
+set OPT(filename) ""
+set OPT(filter)   "*.fits*"
+set OPT(maxcol)	200
+set OPT(cmap)	"grayscale"
+set OPT(scale)  "linear"
+set OPT(zoom)   1
+set OPT(wrap)   1
+set OPT(delay)	0
+set OPT(headgeom) ""
+set OPT(histgeom) ""
+set OPT(plotgeom) ""
+
+set data(min)	0.0
+set data(max)	1.0
+set data(mean)	0.0
+set data(sigma)	1.0
+set cuts(min) ""
+set cuts(max) ""
+set cuts(mode) "minmax"
+set range(start) ""
+set range(end)   ""
+
+set WIN(head) 0
+set WIN(hist) 0
+set WIN(mmm)  0
+set WIN(sumlist) 0
+set WIN(minlist) 0
+set WIN(maxlist) 0
+
+set must_save 0
+
+#############################################################################
+#
+# Menu bar
+# wird beim argv-parsing gebraucht
+#
+frame .fmenu -relief raised -bd 2
+
+menubutton .mfile -text "File" -menu .mfile.m -pady 2 -width 6 -anchor w
+menu .mfile.m
+.mfile.m add command -label "Load" -underline 0 -command {
+    LoadFile [rkFileDialog .ld {Select file to load} $OPT(filename) $OPT(filter)]
+    set OPT(filter) $rkPriv(FileDialogFilter)
+}
+.mfile.m add command -label "Save"    -underline 0 -command { SaveFile $OPT(filename) }
+.mfile.m add command -label "Save as" -underline 5 -command {
+    SaveFile [rkFileDialog .sv {Write file to...} $OPT(filename) "*.fits*"]
+}
+.mfile.m add command -label "Quit" -underline 0 -command {
+    if {[AskForSave] == 2} { return }
+    exit
+}
+
+menubutton .mwin -text "Windows" -menu .mwin.m -pady 2 -anchor w
+menu .mwin.m
+.mwin.m add checkbutton -label "Fitsheader" -underl 0 -var WIN(head) -command CreateHeadWin
+.mwin.m add checkbutton -label "Histogram"  -underl 3 -var WIN(hist) -command CreateHist
+.mwin.m add checkbutton -label "Min/Mean/Max" -under 0 -var WIN(mmm) -command CreatePlot
+
+menubutton .medit -text "Edit" -menu .medit.m -pady 2 -width 6 -anchor w
+menu .medit.m
+.medit.m add command -label "Mark for deletion"   -underline 0 -command { MarkForDel 0 1 }
+.medit.m add command -label "Unmark for deletion" -underline 0 -command { MarkForDel 0 0 }
+.medit.m add command -label "Delete now!" -underline 0 -command {
+    pack forget .mmm.rng .mmm.mark .mmm.unmk .mmm.clr
+    set range(start) ""
+    set range(end) ""
+
+    set l ""
+    for {set i 0} {$i < [llength $deleted]} {incr i} {
+	if [lindex $deleted $i] { append l " $i" }
+    }
+    if {$l != ""} {
+	if [tk_dialog .dl "Delete?" "Really delete the frames with the following numbers:$l?"\
+		questhead 1 "Really!" "Cancel"] {
+	    return
+	}
+	for {set i [llength $deleted]} {$i > 0} {} {
+	    incr i -1	;# delete from end to keep frame-nos correct
+	    if [lindex $deleted $i] {
+		puts "Deleting frame $i..."
+		.fi delete $i
+		set must_save 1
+	    }
+	}
+	SetObjParams
+	CreateHist
+	CreatePlot
+    }
+}
+
+menubutton .mlofl -text "List of Files" -menu .mlofl.m -pady 2
+menu .mlofl.m
+
+proc AddToListOfFiles {fname} {
+    .mlofl.m add radiobutton -value $fname -label $fname\
+	    -variable OPT(filename) -command { LoadFile $OPT(filename) }
+    set l [.mlofl.m index last]
+    if {$l <= 9} {
+	.mlofl.m entryconfigure last -label "$l - $fname" -underline 0
+	bind all <Meta-KeyPress-$l> ".mlofl.m invoke $l"
+    }
+}
+
+menubutton .mhelp -text "Help" -menu .mhelp.m
+menu .mhelp.m
+.mhelp.m add command -label "About" -command {
+    tk_dialog .abt "About tkfmovie" [.fi about] info 0 "Fine"
+}
+.mhelp.m add command -label "Manual" -command {
+    if [catch {exec netscape -raise -remote\
+	    "openURL(file:@@PATH_TO_DOCS@@/deconvolution.html#tkfmovie,new-window)"}] {
+	exec netscape "file:@@PATH_TO_DOCS@@/deconvolution.html#tkfmovie" &
+    }
+}
+
+pack .mfile .mwin .medit .mlofl -in .fmenu -side left
+pack .mhelp -in .fmenu -side right
+
+
+#############################################################################
+#
+# Cmd line opts
+#
+for {set i 0} {$i < $argc} {incr i} {
+
+    set opt [lrange $argv $i $i]
+    incr i
+    if {$i < $argc} { set arg [lrange $argv $i $i] } else { set arg "" }
+
+    switch -glob -- $opt {
+	{-headg*} { set OPT(headgeom) $arg }
+	{-histg*} { set OPT(histgeom) $arg }
+	{-plotg*} { set OPT(plotgeom) $arg }
+	{-head*} { set WIN(head) 1; incr i -1 }
+	{-hist*} { set WIN(hist) 1; incr i -1 }
+	{-plot*} { set WIN(mmm)  1; incr i -1 }
+	{-imgw*} { set OPT(imgwd) $arg }
+	{-imgh*} { set OPT(imght) $arg }
+	{-maxc*} { set OPT(maxcol) $arg }
+	{-cmap}  { set OPT(cmap)  $arg }
+	{-lut}   { set OPT(cmap)  $arg }
+	{-scale} { set OPT(scale) $arg }
+	{-log}   { set OPT(scale) "logarithmic"; incr i -1; # compatibility to fitsmovie }
+	{-zoom}  { set OPT(zoom)  $arg }
+	{-wrap}  { set OPT(wrap)  $arg }
+	{-delay} { set OPT(delay) $arg }
+	{-auto*} { set cuts(mode) "auto" }
+	{-file*} { set OPT(filename) $arg }
+	{-*}	 { error "Unknown option $opt" }
+	default  { incr i -1; break }
+    }
+}
+
+for {} {$i < $argc} {incr i} {
+    set arg [lrange $argv $i $i]
+    if {$OPT(filename) == ""} { set OPT(filename) $arg }
+    AddToListOfFiles [lrange $argv $i $i]
+}
+
+#############################################################################
+
+proc AskForSave {} {
+    global OPT must_save
+
+    if {$must_save} {
+	set state [tk_dialog .sv "Save?" "Some frames were deleted, but the file was not saved!"\
+		questhead 2 "Go on, don't save" "Save first" "Cancel"]
+	if {$state == 1} { SaveFile $OPT(filename); set must_save 0}
+	return $state
+    }
+    return 0
+}
+
+proc SetObjParams {} {
+    global OPT frameno frnolist nframes data cuts deleted must_save
+
+    # get object & size
+    set objline "Object: "
+    if [catch {set hdln [.fi header "OBJECT"]}] {
+	append objline "(unknown)"
+    } else {
+	regexp {........= ' *([^']*) *'} $hdln match object
+	append objline $object
+    }
+    if [catch {set hdln [.fi header NAXIS1]} errMsg] {
+	append objline ", 1"
+    } else {
+	regexp {........= +([0-9]+) } $hdln match n
+	append objline ", $n"
+    }
+    if [catch {set hdln [.fi header NAXIS2]}] {
+	append objline " x 1"
+    } else {
+	regexp {........= +([0-9]+) } $hdln match n
+	append objline " x $n"
+    }
+    set nframes 1
+    if ![catch {set hdln [.fi header NAXIS3]}] {
+	regexp {........= +([0-9]+) } $hdln match nframes
+	append objline " x $nframes"
+	.scl configure -to $nframes
+    } else {
+	.scl configure -to 1
+    }
+    append objline " pixels"
+    if {$must_save} { append objline " (changed)" }
+    .lobj configure -text $objline
+    update
+
+    set data(min) [.fi datamin]
+    set data(max) [.fi datamax]
+    set data(mean) [.fi datamean]
+    set data(sigma) [.fi datasigma]
+
+    set frnolist ""
+    set deleted  ""
+    for {set x 0} {$x < $nframes} {incr x} {
+	lappend frnolist $x
+	lappend deleted  "0"
+    }
+    CreateHist
+    CreatePlot
+}
+
+proc LoadFile {fname} {
+    global OPT frameno frnolist nframes data cuts deleted must_save
+
+    if {[AskForSave] == 2} {
+	set OPT(filename) [.fi cget -file]
+	return
+    }
+    update	;# give filereq a chance to go away
+    set OPT(filename) $fname
+    set frnolist ""
+    set deleted  ""
+    set must_save 0
+    .fi configure -file $fname
+
+    SetObjParams
+
+    if [catch {set hdln [.fi header NAXIS1]} errMsg] {
+	set fx $OPT(zoom)
+    } else {
+	regexp {........= +([0-9]+) } $hdln match n
+	set fx [expr [winfo width  .fi] / $n]
+	if { $fx < 1 } { set fx 1 }
+    }
+    if [catch {set hdln [.fi header NAXIS2]} errMsg] {
+	set fx $OPT(zoom)
+    } else {
+	regexp {........= +([0-9]+) } $hdln match n
+	set fy [expr [winfo height .fi] / $n]
+	if { $fy < 1 } { set fy 1 }
+    }
+    if { $fx > $fy } { set fx $fy }
+    if { $fx != $OPT(zoom) } {
+	if {$OPT(Debug)} { puts "zooming..." }
+	set OPT(zoom) $fx
+	.fi configure -zoom $OPT(zoom)
+    }
+    #
+    # Append to "List of Files" menu, if necessary
+    #
+    set last [.mlofl.m index last]
+    if {  $last == "none" } { set last -1 }
+
+    for { set i 1 } { $i <= $last } {incr i} {
+	set lab [.mlofl.m entryconfigure $i -label]
+	if { $lab != "" } {
+	    regexp {^([0-9] - |)(.*)$} [lindex $lab 4] match num lab
+	    if { $lab == $fname } { return }
+	}
+    }
+    AddToListOfFiles $fname
+}
+
+
+#############################################################################
+
+proc SaveFile {fname} {
+    global must_save
+
+    if {$fname == ""} {return}
+    if [file exists $fname] {
+	set state [tk_dialog .sv "Overwrite?" "$fname already exists, write over it?"\
+				question 2 "Overwrite" "Rename" "Abort"]
+	if {$state == 2} { return }	;# Abort
+	if {$state == 1} { file rename -force $fname $fname.bak }
+    }
+    .fi save $fname
+    set must_save 0
+}
+
+#############################################################################
+
+proc CreateHeadWin {} {
+    global WIN OPT
+
+    if {$WIN(head) && $OPT(filename) != ""} {
+	if ![winfo exists .head] {
+	    toplevel .head -bg Black
+	    wm title .head "FITS header"
+	    wm minsize .head 10 10
+	    wm protocol .head WM_DELETE_WINDOW {set WIN(head) 0; destroy .head}
+
+	    frame .head.tf  -bd 1 -relief raised
+	    frame .head.tff -bd 0
+	    text .head.txt -relief sunken -bd 1 -setgrid y -wrap none\
+		    -yscroll ".head.sc set" -xscroll ".head.sx set"
+	    scrollbar .head.sc -relief sunken -command ".head.txt yview"
+	    scrollbar .head.sx -relief sunken -command ".head.txt xview" -orient h
+	    grid .head.txt .head.sc -in .head.tff -padx .5m -pady 1m -sticky "snew"
+	    grid .head.sx	x   -in .head.tff -padx .5m -pady 1m -sticky "snew"
+	    grid columnconfigure .head.tff 0 -weight 1
+	    grid rowconfigure    .head.tff 0 -weight 1
+	    pack .head.tff -in .head.tf -padx 1.5m -pady 1.5m -fill both -expand y
+
+	    frame .head.bf -relief raised -bd 1
+	    button .head.q -width 20 -text "Dismiss" -command {
+		set WIN(head) 0; destroy .head
+	    }
+	    pack .head.q -in .head.bf -padx 3m -pady 3
+
+	    pack .head.bf -padx 0 -pady 0 -fill x -side bottom
+	    pack .head.tf -padx 0 -pady 0 -fill both -expand 1
+
+	    foreach l [.fi header] { .head.txt insert end "$l\n" }
+	    if {$OPT(headgeom) != ""} {wm geometry .head $OPT(headgeom)}
+	}
+    } else {
+	if [winfo exists .head] {
+	    set OPT(headgeom) [wm geometry .head]
+	    destroy .head
+	}
+    }
+
+}
+
+#############################################################################
+
+set hist(size) 200
+set hist(pgid) ""
+set hist(adj)  ""
+set hist(x)    ""
+set hist(y)    ""
+set hist(maxy) 0
+
+proc DrawHist {} {
+    global hist
+
+    pgsci 1
+    pgbox "BCNST" 0.0 0 "BCNST" 0.0 0
+    pgbin $hist(size) $hist(x) $hist(y) 0
+    pgsci 2	;# prepare to draw cuts
+}
+
+
+proc CreateHist {} {
+    global WIN OPT data cuts hist
+
+    if {$WIN(hist) && $OPT(filename) != ""} {
+	if ![winfo exists .hist] {
+	    toplevel .hist
+	    wm title .hist "Histogram"
+	    wm protocol .hist WM_DELETE_WINDOW {set WIN(hist) 0; CreateHist}
+
+	    pgplot .hist.pl -width 640 -height 240 -bg MidnightBlue -bd 0 -maxcolors 4
+	    pack   .hist.pl -padx 0 -expand 1 -fill both
+	    if {$OPT(histgeom) != ""} {wm geometry .hist $OPT(histgeom)}
+
+	    bind .hist.pl <1> {
+		pgslct $hist(pgid)
+		set pos [.hist.pl world x %x]
+		pgeras
+		DrawHist
+		if {[expr abs($pos-$cuts(min))] < [expr abs($pos-$cuts(max))]} {
+		    set hist(adj) "min"
+		    pgline 2 "$cuts(max) $cuts(max)" "0 $hist(maxy)"
+		} else {
+		    set hist(adj) "max"
+		    pgline 2 "$cuts(min) $cuts(min)" "0 $hist(maxy)"
+		}
+		.hist.pl setcursor vline 0 0 2
+		set cuts(mode) "manual"
+	    }
+	    bind .hist.pl <B1-Motion> {
+		if {$hist(adj) != ""} {
+		    pgslct $hist(pgid)
+		    set cuts($hist(adj)) [.hist.pl world x %x]
+		}
+	    }
+	    bind .hist.pl <ButtonRelease-1> {
+		pgslct $hist(pgid)
+		if {$hist(adj) != ""} {
+		    set pos [.hist.pl world x %x]
+		    set cuts($hist(adj)) $pos
+		    pgsci  2
+		    pgline 2 "$pos $pos" "0 $hist(maxy)"
+		    .fi configure -min $cuts(min) -max $cuts(max)
+		}
+		.hist.pl clrcursor
+	    }
+	    update
+	}
+	set hist(y)    [.fi histogram $hist(size)]
+	set hist(maxy) [expr [maxdata $hist(y)]*1.1]
+
+	set hist(x) ""
+	set x   $data(min)
+	set stp [expr ($data(max)-$data(min))/$hist(size).0]
+	foreach h $hist(y) {
+	    lappend hist(x) $x
+	    set x [expr $x+$stp]
+	}
+
+	if {$hist(pgid) != ""} {pgslct $hist(pgid); pgclos}
+	set hist(pgid) [pgopen ".hist.pl/XTK"]
+	pgsch 2
+	pgsvp 0.03 0.999 0.06 0.99
+	pgswin $data(min) $data(max) 0 $hist(maxy)
+	DrawHist
+	pgline 2 "$cuts(min) $cuts(min)" "0 $hist(maxy)"
+	pgline 2 "$cuts(max) $cuts(max)" "0 $hist(maxy)"
+    } else {
+	if {$hist(pgid) != ""} {
+	    pgslct $hist(pgid)
+	    pgclos
+	    set hist(pgid) ""
+	}
+	if [winfo exists .hist] {
+	    set OPT(histgeom) [wm geometry .hist]
+	    destroy .hist
+	}
+    }
+}
+
+#############################################################################
+
+set oldframeno -1
+
+set nframes 0
+set plot(pgid) ""
+set ploty(minlist)  ""
+set ploty(meanlist) ""
+set ploty(maxlist)  ""
+set plotmin(minlist)  ""
+set plotmin(meanlist) ""
+set plotmin(maxlist)  ""
+set plotmax(minlist)  ""
+set plotmax(meanlist) ""
+set plotmax(maxlist)  ""
+
+proc SetViewport { type } {
+    if {$type == "maxlist"} {
+	pgsvp 0.07 0.99 0.7 0.99
+    } elseif {$type == "meanlist"} {
+	pgsvp 0.07 0.99 0.4 0.7
+    } else {
+	pgsvp 0.07 0.99 0.1 0.4
+    }
+}
+
+proc MarkFrameno {} {
+    global oldframeno frameno nframes frnolist plot ploty plotmin plotmax deleted
+
+    if [winfo ismapped .mmm] {
+	pgslct $plot(pgid)
+	foreach type { maxlist meanlist minlist } {
+	    SetViewport $type
+	    pgswin 0 $nframes $plotmin($type) $plotmax($type)
+	    if {$oldframeno >=0 } {
+		pgsci [expr 1 + [lindex $deleted $oldframeno]]
+		pgpt 1 $oldframeno [lindex $ploty($type) $oldframeno] 17
+		pgsci 3
+	    }
+	    pgpt 1 $frameno [lindex $ploty($type) $frameno] 17
+	}
+	set oldframeno $frameno
+    }
+}
+
+proc TraceFrameno {var1 var2 op} {
+    catch MarkFrameno
+}
+
+proc CreatePlotWin {} {
+    global WIN OPT frameno
+
+    toplevel .mmm
+    wm title .mmm "Min/Mean/Max of frames"
+    wm protocol .mmm WM_DELETE_WINDOW {set WIN(mmm) 0; destroy .mmm}
+
+    pgplot .mmm.pl -width 640 -height 640 -bg MidnightBlue -relief sunken -bd 1 -maxcolors 4
+    pack   .mmm.pl -padx 0 -expand 1 -fill both
+    label  .mmm.lb -text ""
+    pack   .mmm.lb -padx 1m -pady 2 -side left
+    label  .mmm.rng -text ""
+    button .mmm.mark -width 6 -pady 1 -text "Mark"   -command { MarkForDel 1 1 }
+    button .mmm.unmk -width 6 -pady 1 -text "Unmark" -command { MarkForDel 1 0 }
+    button .mmm.clr  -width 6 -pady 1 -text "Clear" -command {
+	pack forget .mmm.rng .mmm.mark .mmm.unmk .mmm.clr
+	set range(start) ""
+	set range(end) ""
+    }
+}
+
+proc CreatePlot {} {
+    global WIN OPT oldframeno frameno frnolist nframes data cuts
+    global plot ploty plotmin plotmax deleted
+
+    if {$WIN(mmm) && $OPT(filename) != ""} {
+	if ![winfo exists .mmm] { CreatePlotWin } else { wm deiconify .mmm }
+	if {$OPT(Debug)} {puts "plotgeom is $OPT(plotgeom)"}
+	if {$OPT(plotgeom) != ""} { wm geometry .mmm $OPT(plotgeom)}
+	update	;# make sure size of pgplot-widget is known
+
+	if {$plot(pgid) != ""} {pgslct $plot(pgid); pgclos}
+	set plot(pgid) [pgopen ".mmm.pl/XTK"]
+	if {$OPT(Debug)} {puts "CreatePlot: Plot-pgid is $plot(pgid)"}
+	pgsch 1
+	pgscf 2
+	pgsci 1
+	update
+	foreach type { maxlist meanlist minlist } {
+	    set ploty($type) [.fi $type]
+	    set plotmax($type) [maxdata $ploty($type)]
+	    set plotmin($type) [mindata $ploty($type)]
+	    SetViewport $type
+
+	    pgswin 0 $nframes $plotmin($type) $plotmax($type)
+	    if {$type != "minlist"} {
+		pgbox "BCST" 0.0 0 "BCNST" 0.0 0
+	    } else {
+		pgbox "BCNST" 0.0 0 "BCNST" 0.0 0
+	    }
+	    pgline $nframes $frnolist $ploty($type)
+	    pgpt   $nframes $frnolist $ploty($type) 17
+	    pgsci 2
+	    for {set i 0} {$i < [llength $deleted]} {incr i} {
+		if [lindex $deleted $i] {
+		    pgpt 1 $i [lindex $ploty($type) $i] 17
+		}
+	    }
+	    pgsci 3
+	    pgpt  1 $frameno [lindex $ploty($type) $frameno] 17
+	    pgsci 1
+	    if {$type == "maxlist"} {
+		pglabel "" "Maximum" ""
+	    } elseif {$type == "meanlist"} {
+		pglabel "" "Mean" ""
+	    } else {
+		pglabel "Frame No." "Minimum" ""
+	    }
+	}
+	bind .mmm.pl <Enter> {.mmm.pl setcursor vline 0 0 3}
+	bind .mmm.pl <Configure> "puts config; CreatePlot"
+	bind .mmm.pl <Motion> {
+	    pgslct $plot(pgid)
+	    .mmm.lb configure -text "Frame [expr round([.mmm.pl world x %x])]"
+	}
+	bind .mmm.pl <ButtonPress-1> {
+	    pgslct $plot(pgid)
+	    set range(start) [expr round([.mmm.pl world x %x])]
+	    .mmm.pl setcursor xrng $range(start) 0.0 2
+	}
+	bind .mmm.pl <B1-Motion> {
+	    .mmm.lb configure -text "Range $range(start) - [expr round([.mmm.pl world x %x])]"
+	}
+	bind .mmm.pl <ButtonRelease-1> {
+	    pgslct $plot(pgid)
+	    .mmm.pl setcursor vline 0 0 3
+	    set newframe [expr round([.mmm.pl world x %x])]
+	    if {$range(start) == $newframe} {
+		.fi configure -frameno $newframe
+	    } else {
+		if {$newframe < $range(start)} {
+		    set range(end) $range(start)
+		    set range(start) $newframe
+		} else { set range(end) $newframe }
+		.mmm.lb configure -text "Frame $frameno"
+		.mmm.rng configure -text "Range $range(start) - $range(end)"
+		pack .mmm.clr .mmm.unmk .mmm.mark .mmm.rng -padx 2 -side right
+	    }
+	}
+	set oldframeno $frameno
+	trace variable frameno w TraceFrameno
+    } else {
+	if {$OPT(Debug)} {puts "CreatePlot(destroy): Plot-pgid is $plot(pgid)"}
+	if {$plot(pgid) != ""} {
+	    pgslct $plot(pgid)
+	    pgclos
+	    set plot(pgid) ""
+	}
+	if [winfo ismapped .mmm] {
+	    set OPT(plotgeom) [wm geometry .mmm]
+	    bind .mmm.pl <Enter> {}
+	    wm withdraw .mmm
+	}
+	trace vdelete frameno w TraceFrameno
+    }
+}
+
+
+proc DrawPlot {} {
+    global OPT frameno nframes frnolist plot ploty plotmin plotmax deleted
+
+    if {$OPT(Debug)} {puts "DrawPlot: Plot-pgid is $plot(pgid)"}
+    pgslct $plot(pgid)
+    pgsci 1
+    foreach type { maxlist meanlist minlist } {
+	if {$OPT(Debug)} {puts $type}
+	SetViewport $type
+
+	pgswin 0 $nframes $plotmin($type) $plotmax($type)
+	if {$type != "minlist"} {
+	    pgbox "BCST" 0.0 0 "BCNST" 0.0 0
+	} else {
+	    pgbox "BCNST" 0.0 0 "BCNST" 0.0 0
+	}
+	pgline $nframes $frnolist $ploty($type)
+	pgpt   $nframes $frnolist $ploty($type) 17
+	pgsci 2
+	for {set i 0} {$i < [llength $deleted]} {incr i} {
+	    if [lindex $deleted $i] {
+		pgpt 1 $i [lindex $ploty($type) $i] 17
+	    }
+	}
+	pgsci 3
+	pgpt  1 $frameno [lindex $ploty($type) $frameno] 17
+	pgsci 1
+	if {$type == "maxlist"} {
+	    pglabel "" "Maximum" ""
+	} elseif {$type == "meanlist"} {
+	    pglabel "" "Mean" ""
+	} else {
+	    pglabel "Frame No." "Minimum" ""
+	}
+    }
+}
+
+#############################################################################
+
+proc MarkForDel {rng del} {
+    global frameno deleted range nframes
+
+    if {$rng} {
+	set delist ""
+	if {$range(start) < 0} {set range(start) 0}
+	if {$range(end)   < 0} {set range(end)   0}
+	if {$range(start) >= $nframes} {set range(start) [expr $nframes-1]}
+	if {$range(end)   >= $nframes} {set range(end)   [expr $nframes-1]}
+
+	for {set f $range(start)} {$f <= $range(end)} {incr f} {lappend delist $del}
+	set deleted [eval lreplace {$deleted} $range(start) $range(end) $delist]
+	DrawPlot
+    } else {
+	set deleted [lreplace $deleted $frameno $frameno $del]
+	MarkFrameno
+    }
+}
+
+#############################################################################
+
+proc labentry {w wd text var} {
+    frame $w
+    label $w.l -width $wd -anchor e -text $text
+    entry $w.e -width  9  -textvariable $var
+    pack $w.l -side left
+    pack $w.e -side left -expand y -fill x -padx 2
+}
+
+proc decrAndZoom {var amt} {
+    global OPT frameno $var
+    incr $var [expr -$amt]
+    eval "if {$$var < 0} { bell; set $var 0; return }"
+    update
+    .fi configure -zoom $OPT(zoom) -wrap $OPT(wrap) -frameno $frameno
+}
+
+proc scrlentry {w text gvar var} {
+    global $gvar	;# in tcl 8.5, global does not accept "OPT(foo)" any more
+
+    frame $w -relief flat -bd 0
+    label $w.l -width 7 -anchor e -text $text
+    entry $w.e -width 5 -textvariable $var
+    scrollbar $w.s -width 8 -elementbord 1 -bd 0 -repeatdelay -1 -command "decrAndZoom $var"
+    #
+    # change value using scroll wheel and up/down
+    #
+    bind $w.e <Button-5> "decrAndZoom $var +1"
+    bind $w.e <Button-4> "decrAndZoom $var -1"
+    bind $w.e <Key-Up>   "decrAndZoom $var -1"
+    bind $w.e <Key-Down> "decrAndZoom $var  1"
+
+    pack $w.l -side left
+    pack $w.e -side left -expand y -fill x -padx 2 -pady 2
+    pack $w.s -side left
+}
+
+#############################################################################
+# create an unmapped pgplot-widget to give it a chance to allocate colors
+#
+CreatePlotWin
+wm withdraw .mmm
+
+
+#############################################################################
+#
+# filename entry
+#
+frame .finfo -relief raised -bd 1
+labentry .ffn 9 "Filename:" OPT(filename)
+bind .ffn.e <Return> { LoadFile $OPT(filename)}
+
+pack .ffn -in .finfo -expand y -fill x -pady 2
+#
+# Object and Size label
+#
+label .lobj -text "Object: None" -relief raised -anchor w -padx 2m -pady 5
+#
+# the fitsimage itself
+#
+frame .fif -relief raised -bd 1
+label .fif.pos -bd 0 -text "" -anchor w
+if [catch {fitsimg .fi -bd 2 -relief sunken -width $OPT(imgwd) -height $OPT(imght)\
+	-framenovar frameno -colorbar 10 -maxcolors $OPT(maxcol) -lut $OPT(cmap)\
+	-zoom $OPT(zoom) -wrap $OPT(wrap) -scale $OPT(scale)}] {
+    if ![tk_dialog .abt "Color supply empty"\
+	    "Could not get enough colors.\n I will try to restart myself with a private colormap"\
+	    info 0 "Go ahead" "Abort"] {
+	eval exec @@PATH_TO_MOVISH@@/movish $argv0 -colormap new $argv &
+    }
+    exit
+}
+
+bind .fi <Motion> {
+    catch {.fif.pos configure -text\
+	    "([.fi pixel x %x], [.fi pixel y %y])  [.fi pixel v %x %y]"}
+}
+
+bind .fi <B1-Motion> {
+    set span [expr $data(max)-$data(min)]
+    set center [expr $data(min) + $span * double(%x) / double([winfo width .fi])]
+    set width  [expr $span * (1. - double(%y) / double([winfo height .fi])) / 2.]
+    set cuts(min) [format "%%.2f" [expr $center - $width]]
+    set cuts(max) [format "%%.2f" [expr $center + $width]]
+    set cuts(mode) "manual"
+    .fi configure -min $cuts(min) -max $cuts(max)
+    if {$hist(pgid) != ""} { CreateHist }
+}
+#
+# option panel
+#
+frame .fo -relief raised -bd 1
+#
+# Colormap
+#
+proc SetCmap {cmap} {
+    global OPT
+    set OPT(cmap) $cmap
+    .fi configure -maxcolors $OPT(maxcol) -lut $cmap
+    .fo.gtc configure -text "[.fi cget -maxcolors] colors reserved"
+}
+frame .fo.lut -bd 0
+label .fo.lut.l -text "Colormap:" -anchor w -bd 0 -padx 5 -pady 2
+menubutton .fo.lut.m -textvariable OPT(cmap) -indicatoron 1 -menu .fo.lut.m.menu \
+	 -relief raised -bd 1 -highlightthickness 0 -anchor c -width 12
+menu .fo.lut.m.menu -tearoff 0
+foreach i { "grayscale" "blackbody" "heat" "rainbow"} {
+    .fo.lut.m.menu add command -label $i -underline 0 -command "SetCmap $i"
+}
+pack .fo.lut.l .fo.lut.m -side top -fill x -padx 3 -pady 1
+#
+# Number of colors
+#
+scrlentry .fo.mxc "Colors" OPT OPT(maxcol)
+bind .fo.mxc.e <Return> { SetCmap $OPT(cmap) }
+label .fo.gtc -text "[.fi cget -maxcolors] colors reserved" -anchor e -bd 0 -padx 5 -pady 2
+pack .fo.mxc -in .fo.lut -side top -fill x -padx 0 -pady 2
+pack .fo.gtc -in .fo.lut -side top -fill x -padx 0 -pady 0
+#
+# lin/log
+#
+frame .fo.scl -bd 0
+label .fo.scl.l -text "Scaling:" -anchor w -relief raised -bd 0 -padx 5 -pady 2
+menubutton .fo.scl.m -textvariable OPT(scale) -indicatoron 1 -menu .fo.scl.m.menu \
+	-relief raised -bd 1 -highlightthickness 0 -anchor c
+menu .fo.scl.m.menu -tearoff 0
+foreach i { "linear" "logarithmic" "histequal" } {
+    .fo.scl.m.menu add command -label $i -underline 1\
+	    -command "set OPT(scale) $i; .fi configure -scale $i"
+}
+pack .fo.scl.l .fo.scl.m -side top -fill x -padx 3 -pady 1
+#
+# Wrap count
+#
+scrlentry .fo.w "Wrap" OPT OPT(wrap)
+bind .fo.w.e <Return> {.fi configure -wrap $OPT(wrap)}
+#
+# Cuts
+#
+proc set_cuts {} {
+    global cuts data hist
+
+    if {$cuts(mode) == "minmax"} {
+	set cuts(min) $data(min)
+	set cuts(max) $data(max)
+    } elseif {$cuts(mode) == "5 sigma"} {
+	set cuts(min) [expr $data(mean) - 5 * $data(sigma)]
+	set cuts(max) [expr $data(mean) + 5 * $data(sigma)]
+    } elseif {$cuts(mode) == "3/10"} {
+	set cuts(min) [expr $data(mean) -  3 * $data(sigma)]
+	set cuts(max) [expr $data(mean) + 10 * $data(sigma)]
+    }
+    if {$hist(pgid) != ""} { CreateHist }
+}
+
+frame .fm -relief flat -bd 1
+label .fm.l -text "Cuts:"
+menubutton .fm.mode -textvariable cuts(mode) -indicatoron 1 -menu .fm.mode.menu \
+	-relief raised -bd 1 -highlightthickness 0 -anchor c
+menu .fm.mode.menu -tearoff 0
+foreach i { "manual" "minmax" "5 sigma" "3/10"} {
+    .fm.mode.menu add command -label $i -command\
+	    "set cuts(mode) \"$i\"
+	     set_cuts; .fi configure -min \$cuts(min) -max \$cuts(max)"
+}
+
+labentry .fm.in 4 "Min" cuts(min)
+bind .fm.in.e <Return> {
+    .fi configure -min $cuts(min)
+    set cuts(mode) "manual"
+    if {$hist(pgid) != ""} { CreateHist }
+}
+
+labentry .fm.ax 4 "Max" cuts(max)
+bind .fm.ax.e <Return> {
+    .fi configure -max $cuts(max)
+    set cuts(mode) "manual"
+    if {$hist(pgid) != ""} { CreateHist }
+}
+
+pack .fm.ax .fm.in  -side bottom -expand y -fill x -pady 2
+pack .fm.l	-side left
+pack .fm.mode	-side right -padx 2 -pady 2 -fill x -expand y
+#
+# Zoom
+#
+scrlentry .fo.z "Zoom" OPT OPT(zoom)
+bind .fo.z.e <Return> {.fi configure -zoom $OPT(zoom)}
+#
+# frame no.
+#
+scrlentry .fo.fr "Frame" frameno frameno
+bind .fo.fr.e <Return> {.fi configure -frameno $frameno}
+#
+# delay
+#
+scrlentry .fo.dl "Delay" OPT OPT(delay)
+
+pack .fo.lut .fo.scl .fo.w .fm .fo.z .fo.fr .fo.dl -in .fo -pady 3 -padx 2 -fill x
+
+#############################################################################
+#
+# Slider
+#
+scale .scl -variable frameno -orient h -showvalue 0 -width 10\
+	-command ".fi configure -frameno"
+
+#############################################################################
+#
+# Button bar
+#
+proc MakeStopBut {but} {
+    $but configure -text {[]} -command { set stop 1 }
+}
+
+proc PlayMovie {dir} {
+    global OPT stop frameno
+    set stop ""
+    while {($stop == "") && ([.fi $dir] == "")} {update; after $OPT(delay)}
+    .fb.plb configure -text "<<" -command { MakeStopBut .fb.plb; PlayMovie backward}
+    .fb.plf configure -text ">>" -command { MakeStopBut .fb.plf; PlayMovie forward }
+}
+
+frame .fb
+button .fb.beg -text "|<" -width 1 -command { .fi configure -frameno 0}
+button .fb.plb -text "<<" -width 1 -command { MakeStopBut .fb.plb; PlayMovie backward}
+button .fb.bck -text "<"  -width 1 -command { .fi backward}
+button .fb.fwd -text ">"  -width 1 -command { .fi forward}
+button .fb.plf -text ">>" -width 1 -command { MakeStopBut .fb.plf; PlayMovie forward}
+button .fb.end -text ">|" -width 1 -command { .fi configure -frameno 9999}
+
+pack .fb.beg .fb.plb .fb.bck .fb.fwd .fb.plf .fb.end -side left -fill x -expand y -padx 0
+
+#
+# pack it up
+#
+pack .fif.pos	-in .fif -fill x    -padx 7 -pady 2 -side top
+pack .fi	-in .fif -fill both -padx 5 -pady 5 -side top -expand y
+pack .scl	-in .fif -fill x    -padx 3 -pady 1 -side top
+pack .fb	-in .fif -fill x    -padx 3 -pady 3 -side bottom
+
+pack .fmenu	-fill x	   -padx 1	    -side top
+pack .finfo	-fill x    -padx 1 -pady 1 -side top
+pack .lobj	-fill x	   -padx 1 -pady 0 -side top
+pack .fif	-fill both -padx 1 -pady 1 -side left -expand y
+pack .fo	-fill y    -padx 1 -pady 1 -side left
+
+update
+
+#############################################################################
+#
+# Keyboard shortcuts
+#
+# a - Save As
+# b - Blackbody
+# c
+# d			D - Delete
+# e
+# f - Fitsheader
+# g - Grayscale
+# h - heat colors
+# i - lin. scale
+# j
+# k
+# l - Load
+# m - Min/Mean/Max	M - Mark for Del
+# n
+# o - log. scale
+# p
+# q - Quit
+# r - Rainbow
+# s - Save
+# t - histogram
+# u - Unmark
+# v
+# w
+# x
+# y
+# z
+#
+bind . <Meta-l> {.mfile.m invoke 1}	;# Load
+bind . <Meta-s> {.mfile.m invoke 2}	;# Save
+bind . <Meta-a> {.mfile.m invoke 3}	;# Save as
+bind . <Meta-q> {.mfile.m invoke 5}	;# Quit
+
+bind all <Meta-f> {.mwin.m invoke 1}	;# Fitsheader
+bind all <Meta-t> {.mwin.m invoke 2}	;# Histogram
+bind all <Meta-m> {.mwin.m invoke 3}	;# Min/Mean/Max
+
+bind . <Meta-M> {.medit.m invoke 1}	;# Mark for Delete (Shift-M)
+bind . <Meta-u> {.medit.m invoke 2}	;# Unmark for Del.
+bind . <Meta-D> {.medit.m invoke 3}	;# Delete now
+
+bind all <Meta-g> {.fo.lut.m.menu invoke 0}
+bind all <Meta-b> {.fo.lut.m.menu invoke 1}
+bind all <Meta-h> {.fo.lut.m.menu invoke 2}
+bind all <Meta-r> {.fo.lut.m.menu invoke 3}
+
+bind all <Meta-i> {.fo.scl.m.menu invoke 0}	;# Scale lin
+bind all <Meta-o> {.fo.scl.m.menu invoke 1}	;# Scale log
+
+bind all <Shift-Left>  {.fb.beg invoke}	;# Goto Start
+bind all <Shift-Right> {.fb.end invoke}	;# Goto End
+bind all <Right> {.fb.fwd invoke}	;# Step forward
+bind all <Left>  {.fb.bck invoke}	;# Step backward
+bind all <greater> {.fb.plf invoke}	;# Play fwd
+bind all <less>	 {.fb.plb invoke}	;# Play bwd
+bind all <space> {set stop 1}
+
+#bind . <KeyPress> {puts "That was %K"}
+
+#############################################################################
+# try to keep trace of some stuff
+#
+proc DataMinMax_trace { var elem op } { set_cuts }
+
+trace variable data w DataMinMax_trace
+
+
+#############################################################################
+# finally, load the file
+#
+if {$OPT(filename) != ""} { LoadFile $OPT(filename) }
+
+CreateHeadWin
+CreateHist
+CreatePlot
