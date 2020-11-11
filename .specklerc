@@ -1,0 +1,56 @@
+# .specklerc
+#
+# Created: 17.Feb.95 by Rainer Köhler
+# Last Change: Sat Nov  3 23:19:07 2001
+#
+# Contains some User-definable parameters for mcspeckle
+#
+#
+# Bitpix-value to give to the fits-programs.  Only 16 or -32 are allowed!
+# speckle will use -32 for the fourier transform, since 16 is not enough
+# Default: 16
+DefaultBitpix = -32
+
+# How to call prespeckle
+# Default: "prespeckle"
+Prespeckle = prespeckle -ni
+
+# Options for badpixmask
+# Default: ""
+#BadpixMaskOpts =
+
+# Fits-file containg known badpixels
+# Default: ""
+#BadpixMaskFile =
+
+# Fits-file containg flatfield
+# Default: ""
+#FlatfieldFile =
+
+# How to call tkfmovie
+# Default: "tkfmovie -enlarge 2 -lut heat"
+Fitsmovie = tkfmovie -geometry -70+180 -zoom 2 -log -lut heat -delay 10
+
+# Options for despeckle when computing Knox-Thompson-Phase
+# Default: -r 999
+#KTphaseOpts = -r 999
+
+# Options for despeckle when computing Phase from bispectrum
+# Default: "" (empty string)
+#BiphaseOpts =
+
+# Cuts for visibility frames.
+# Will only be used if this keyword is present in .specklerc
+# Default: 0.0 2.0 (but not used by default)
+VisiMinMax = 0.0 2.0
+
+# Cuts for phase frames.
+# Will only be used if this keyword is present in .specklerc
+# Default: -3.2 3.2 (but not used by default)
+#PhasMinMax = -3.2 3.2
+
+# Optins to use when calling maxbright
+# Default: "-pmax 0.1"
+#MaxbrightOpts = -pmax 0.1
+
+# End of .specklerc
